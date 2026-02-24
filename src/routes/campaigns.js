@@ -69,15 +69,16 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
             });
         }
 
-        let contacts;
+        let contacts = [];
         if (req.body.fromSource === 'database') {
             [contacts] = await db.query(
                 `SELECT name, phone FROM contacts WHERE user_id = ?`,
                 [userId]
             );
+        } else if (req.body.fromSource === 'selected' && Array.isArray(req.body.contacts)) {
+            contacts = req.body.contacts;
         } else {
-            // In a real scenario, this would read from a temp CSV or the body
-            // For now, default to database for the runner logic
+            // Default to all contacts if no source specified or unimplemented CSV source
             [contacts] = await db.query(`SELECT name, phone FROM contacts WHERE user_id = ?`, [userId]);
         }
 

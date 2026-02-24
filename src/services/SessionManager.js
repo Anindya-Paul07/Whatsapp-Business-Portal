@@ -120,19 +120,25 @@ class SessionManager {
             this.io.to(room).emit('session_authenticated', { userId });
         });
 
-        client.on('auth_failure', (msg) => {
+        client.on('auth_failure', async (msg) => {
             console.error(`[SessionManager] Auth failure for user ${userId}:`, msg);
             this.io.to(room).emit('session_error', { error: msg });
             this.sessions.delete(userId);
+            try {
+                await client.destroy();
+            } catch (_) { /* ignore */ }
         });
 
-        client.on('disconnected', (reason) => {
+        client.on('disconnected', async (reason) => {
             console.warn(`[SessionManager] Disconnected user ${userId}:`, reason);
             this.io.to(room).emit('session_status', {
                 status: 'disconnected',
                 message: 'WhatsApp logged out'
             });
             this.sessions.delete(userId);
+            try {
+                await client.destroy();
+            } catch (_) { /* ignore */ }
         });
 
         // ── Inbound message handler ─────────────────────────────────
@@ -148,31 +154,34 @@ class SessionManager {
      *  3. Emit 'message_received' to the user's Socket.IO room
      */
     async _handleInboundMessage(msg, userId, room) {
-        const contact = await msg.getContact();
-        const contactPhone = contact.number || msg.from.replace('@c.us', '');
-        const body = msg.body;
-
-        // 1 – Save incoming message to chat_logs
         try {
-            await db.query(
-                `INSERT INTO chat_logs (user_id, contact_phone, body, direction)
+            // Ignore group messages
+            if (msg.from.endsWith('@g.us')) return;
+
+            const contact = await msg.getContact();
+            const contactPhone = contact.number || msg.from.replace('@c.us', '');
+            const body = msg.body;
+
+            // 1 – Save incoming message to chat_logs
+            try {
+                await db.query(
+                    `INSERT INTO chat_logs (user_id, contact_phone, body, direction)
          VALUES (?, ?, ?, 'in')`,
-                [userId, contactPhone, body]
-            );
-        } catch (err) {
-            console.error('[SessionManager] DB log error (inbound):', err.message);
-        }
+                    [userId, contactPhone, body]
+                );
+            } catch (err) {
+                console.error('[SessionManager] DB log error (inbound):', err.message);
+            }
 
-        // 2 – Emit real-time event to the user's chat tab
-        this.io.to(room).emit('message_received', {
-            contactPhone,
-            body,
-            direction: 'in',
-            timestamp: new Date().toISOString(),
-        });
+            // 2 – Emit real-time event to the user's chat tab
+            this.io.to(room).emit('message_received', {
+                contactPhone,
+                body,
+                direction: 'in',
+                timestamp: new Date().toISOString(),
+            });
 
-        // 3 – Check template_bots for auto-reply
-        try {
+            // 3 – Check template_bots for auto-reply
             const [bots] = await db.query(
                 `SELECT * FROM template_bots
           WHERE user_id = ? AND is_active = 1`,
@@ -182,7 +191,7 @@ class SessionManager {
             for (const bot of bots) {
                 let matched = false;
                 const keyword = bot.keyword.toLowerCase();
-                const msgBodyLow = body.toLowerCase().trim();
+                const msgBodyLow = (body || '').toLowerCase().trim();
 
                 if (bot.reply_type === 'exact') {
                     matched = msgBodyLow === keyword;
@@ -212,7 +221,7 @@ class SessionManager {
                 }
             }
         } catch (err) {
-            console.error('[SessionManager] Template bot error:', err.message);
+            console.error('[SessionManager] Inbound message error:', err.message);
         }
     }
 }

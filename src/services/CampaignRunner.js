@@ -13,6 +13,7 @@ const getDeepPause = () => Math.floor(Math.random() * (600000 - 300000 + 1)) + 3
  * Handles {option1|option2} format for content uniqueness.
  */
 function parseSpintax(text) {
+    if (!text) return '';
     return text.replace(/\{([^{}]+)\}/g, (match, options) => {
         const choices = options.split('|');
         return choices[Math.floor(Math.random() * choices.length)];
@@ -28,112 +29,141 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
     let failCount = 0;
     let rateLimitCooling = false;
 
-    activeCampaigns.set(campaignId, true);
+    try {
+        activeCampaigns.set(campaignId, true);
 
-    await db.query(`UPDATE campaigns SET status = 'processing' WHERE id = ?`, [campaignId]);
+        await db.query(`UPDATE campaigns SET status = 'processing' WHERE id = ?`, [campaignId]);
 
-    for (let i = 0; i < contacts.length; i++) {
-        // 1. Manual Stop Check
-        if (!activeCampaigns.get(campaignId)) break;
+        for (let i = 0; i < contacts.length; i++) {
+            // 1. Manual Stop Check
+            if (!activeCampaigns.get(campaignId)) break;
 
-        // 2. Rate Limit Cooling Check
-        if (rateLimitCooling) {
-            console.warn(`[CampaignRunner] Rate limiting detected. Cooling down for 60s...`);
-            await new Promise(r => setTimeout(r, 60000));
-            rateLimitCooling = false;
-        }
+            // Check client readiness
+            if (!client || !client.info) {
+                console.error(`[CampaignRunner] Client for user ${userId} not ready, stopping campaign.`);
+                break;
+            }
 
-        // 3. Deep Pause every 15 messages
-        if (i > 0 && i % 15 === 0) {
-            const pauseTime = getDeepPause();
-            console.log(`[Anti-Ban] Message limit reached. Deep Pause for ${(pauseTime / 60000).toFixed(1)} mins...`);
-            io.to(room).emit('campaign_update', { campaignId, status: 'Deep Pause', progress: Math.round((i / contacts.length) * 100) });
-            await new Promise(r => setTimeout(r, pauseTime));
-        }
+            // 2. Rate Limit Cooling Check
+            if (rateLimitCooling) {
+                console.warn(`[CampaignRunner] Rate limiting detected. Cooling down for 60s...`);
+                await new Promise(r => setTimeout(r, 60000));
+                rateLimitCooling = false;
+            }
 
-        const contact = contacts[i];
-        const chatId = contact.phone.replace(/\D/g, '') + '@c.us';
+            // 3. Deep Pause every 15 messages
+            if (i > 0 && i % 15 === 0) {
+                const pauseTime = getDeepPause();
+                console.log(`[Anti-Ban] Message limit reached. Deep Pause for ${(pauseTime / 60000).toFixed(1)} mins...`);
+                io.to(room).emit('campaign_update', { campaignId, status: 'Deep Pause', progress: Math.round((i / contacts.length) * 100) });
+                await new Promise(r => setTimeout(r, pauseTime));
+            }
 
-        // --- Message Preparation ---
-        let content = message.replace(/\{\{name\}\}/gi, contact.name || '');
-        content = parseSpintax(content); // Apply spintax
+            const contact = contacts[i];
+            const chatId = contact.phone.replace(/\D/g, '') + '@c.us';
 
-        let success = true;
-        try {
-            // --- Human-Like Behaviour Wrapper ---
-            await client.sendPresenceAvailable();
-            const chat = await client.getChatById(chatId);
+            // --- Message Preparation ---
+            let content = message.replace(/\{\{name\}\}/gi, contact.name || '');
+            content = parseSpintax(content); // Apply spintax
 
-            // Simulating typing based on content length
-            const typingSpeed = 50; // ms per char
-            const typingTime = Math.min(content.length * typingSpeed, 10000); // capped at 10s for UX
+            let success = true;
+            try {
+                // --- Human-Like Behaviour Wrapper ---
+                try {
+                    await client.sendPresenceAvailable();
+                    const chat = await client.getChatById(chatId);
 
-            console.log(`Status: Simulating Typing for ${contact.phone}... ${(typingTime / 1000).toFixed(1)}s`);
-            await chat.sendStateTyping();
-            await new Promise(r => setTimeout(r, typingTime));
+                    // Simulating typing based on content length
+                    const typingSpeed = 50; // ms per char
+                    const typingTime = Math.min(content.length * typingSpeed, 10000); // capped at 10s for UX
 
-            const msgResult = await client.sendMessage(chatId, content);
-            await chat.clearState();
+                    console.log(`Status: Simulating Typing for ${contact.phone}... ${(typingTime / 1000).toFixed(1)}s`);
+                    await chat.sendStateTyping();
+                    await new Promise(r => setTimeout(r, typingTime));
+                } catch (behaviorErr) {
+                    console.warn(`[CampaignRunner] Human-like behavior simulation failed:`, behaviorErr.message);
+                }
 
-            // Log outbound
-            await db.query(
-                `INSERT INTO chat_logs (user_id, contact_phone, body, direction)
-                 VALUES (?, ?, ?, 'out')`,
-                [userId, contact.phone, content]
-            );
+                const msgResult = await client.sendMessage(chatId, content);
 
-            sentCount++;
-            console.log(`[CampaignRunner] Delivered to ${contact.phone}`);
+                try {
+                    const chat = await client.getChatById(chatId);
+                    await chat.clearState();
+                } catch (_) { }
 
-        } catch (err) {
-            success = false;
-            failCount++;
-            console.error(`[CampaignRunner] Delivery Failure for ${contact.phone}:`, err.message);
+                // Log outbound
+                await db.query(
+                    `INSERT INTO chat_logs (user_id, contact_phone, body, direction)
+                     VALUES (?, ?, ?, 'out')`,
+                    [userId, contact.phone, content]
+                );
 
-            // Detection: check for rate limiting or ban indicators in error message
-            if (err.message.toLowerCase().includes('rate') || err.message.toLowerCase().includes('limit')) {
-                rateLimitCooling = true;
+                sentCount++;
+                console.log(`[CampaignRunner] Delivered to ${contact.phone}`);
+
+            } catch (err) {
+                success = false;
+                failCount++;
+                console.error(`[CampaignRunner] Delivery Failure for ${contact.phone}:`, err.message);
+
+                // Detection: check for rate limiting or ban indicators in error message
+                if (err.message.toLowerCase().includes('rate') || err.message.toLowerCase().includes('limit')) {
+                    rateLimitCooling = true;
+                }
+            }
+
+            // 4. Progress Update
+            io.to(room).emit('campaign_update', {
+                campaignId,
+                status: 'processing',
+                progress: Math.round(((i + 1) / contacts.length) * 100),
+                lastPhone: contact.phone,
+                success: success,
+                sentCount,
+                failCount,
+                total: contacts.length
+            });
+
+            // 5. Smart Delay between messages
+            if (i < contacts.length - 1 && activeCampaigns.get(campaignId)) {
+                const delay = getHumanDelay();
+                console.log(`[Anti-Ban] Individual Delay: ${(delay / 1000).toFixed(1)}s`);
+                await new Promise(r => setTimeout(r, delay));
             }
         }
 
-        // 4. Progress Update
-        io.to(room).emit('campaign_update', {
+        const isStopped = !activeCampaigns.get(campaignId);
+        const finalStatus = isStopped ? 'failed' : (failCount === contacts.length ? 'failed' : 'completed');
+
+        await db.query(
+            `UPDATE campaigns SET status = ?, sent_count = ?, fail_count = ? WHERE id = ?`,
+            [finalStatus, sentCount, failCount, campaignId]
+        );
+
+        io.to(room).emit('campaign_finished', {
             campaignId,
-            status: 'processing',
-            progress: Math.round(((i + 1) / contacts.length) * 100),
-            lastPhone: contact.phone,
-            success: success,
-            sentCount,
-            failCount,
-            total: contacts.length
+            status: finalStatus,
+            sent: sentCount,
+            failed: failCount,
+            total: contacts.length,
+            wasStopped: isStopped
         });
-
-        // 5. Smart Delay between messages
-        if (i < contacts.length - 1 && activeCampaigns.get(campaignId)) {
-            const delay = getHumanDelay();
-            console.log(`[Anti-Ban] Individual Delay: ${(delay / 1000).toFixed(1)}s`);
-            await new Promise(r => setTimeout(r, delay));
-        }
+    } catch (fatalErr) {
+        console.error(`[CampaignRunner] Fatal Error in campaign ${campaignId}:`, fatalErr.message);
+        try {
+            await db.query(
+                `UPDATE campaigns SET status = 'failed' WHERE id = ?`,
+                [campaignId]
+            );
+        } catch (_) { }
+        io.to(room).emit('campaign_finished', {
+            campaignId,
+            status: 'failed',
+            error: fatalErr.message
+        });
+    } finally {
+        activeCampaigns.delete(campaignId);
     }
-
-    const isStopped = !activeCampaigns.get(campaignId);
-    const finalStatus = isStopped ? 'failed' : (failCount === contacts.length ? 'failed' : 'completed');
-
-    await db.query(
-        `UPDATE campaigns SET status = ?, sent_count = ?, fail_count = ? WHERE id = ?`,
-        [finalStatus, sentCount, failCount, campaignId]
-    );
-
-    io.to(room).emit('campaign_finished', {
-        campaignId,
-        status: finalStatus,
-        sent: sentCount,
-        failed: failCount,
-        total: contacts.length,
-        wasStopped: isStopped
-    });
-
-    activeCampaigns.delete(campaignId);
 }
 
 function stopCampaign(campaignId) {

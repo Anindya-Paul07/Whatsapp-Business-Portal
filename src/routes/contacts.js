@@ -8,6 +8,14 @@ const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
 
+/**
+ * Normalizes phone numbers by removing all non-digit characters.
+ */
+const normalizePhone = (phone) => {
+    if (!phone) return '';
+    return phone.replace(/\D/g, '');
+};
+
 // Multer: store CSV uploads in ./uploads/
 const upload = multer({
     dest: path.resolve('./uploads'),
@@ -45,11 +53,16 @@ router.post('/', authMiddleware, async (req, res) => {
         return res.status(400).json({ success: false, message: 'name and phone are required' });
     }
 
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone) {
+        return res.status(400).json({ success: false, message: 'Invalid phone number' });
+    }
+
     try {
         const [result] = await db.query(
             `INSERT INTO contacts (user_id, name, phone, labels, source)
        VALUES (?, ?, ?, ?, 'manual')`,
-            [req.user.id, name, phone, labels || null]
+            [req.user.id, name, cleanPhone, labels || null]
         );
         return res.status(201).json({ success: true, contactId: result.insertId });
     } catch (err) {
@@ -66,11 +79,16 @@ router.put('/:id', authMiddleware, async (req, res) => {
     const { name, phone, labels } = req.body;
     const contactId = req.params.id;
 
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone) {
+        return res.status(400).json({ success: false, message: 'Invalid phone number' });
+    }
+
     try {
         const [result] = await db.query(
             `UPDATE contacts SET name = ?, phone = ?, labels = ?
         WHERE id = ? AND user_id = ?`,
-            [name, phone, labels || null, contactId, req.user.id]
+            [name, cleanPhone, labels || null, contactId, req.user.id]
         );
 
         if (result.affectedRows === 0) {
@@ -78,6 +96,9 @@ router.put('/:id', authMiddleware, async (req, res) => {
         }
         return res.json({ success: true, message: 'Contact updated' });
     } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({ success: false, message: 'Another contact with this phone already exists' });
+        }
         console.error('[Contacts] Update error:', err.message);
         return res.status(500).json({ success: false, message: 'Server error' });
     }
@@ -111,47 +132,55 @@ router.post('/csv', authMiddleware, upload.single('file'), async (req, res) => {
     const results = [];
     const filePath = req.file.path;
 
-    fs.createReadStream(filePath)
-        .pipe(csvParser())
-        .on('data', (row) => {
-            const phone = (row.phone || row.Phone || '').trim();
-            const name = (row.name || row.Name || '').trim();
-            if (phone) results.push({ name, phone, labels: row.labels || null });
-        })
-        .on('end', async () => {
-            fs.unlinkSync(filePath); // clean up temp file
-
-            if (results.length === 0) {
-                return res.status(400).json({ success: false, message: 'CSV has no valid rows' });
-            }
-
-            let inserted = 0;
-            let skipped = 0;
-
-            for (const contact of results) {
-                try {
-                    await db.query(
-                        `INSERT INTO contacts (user_id, name, phone, labels, source)
-             VALUES (?, ?, ?, ?, 'csv')`,
-                        [req.user.id, contact.name, contact.phone, contact.labels]
-                    );
-                    inserted++;
-                } catch (_) {
-                    skipped++; // duplicate or constraint error
-                }
-            }
-
-            return res.json({
-                success: true,
-                message: `CSV import complete: ${inserted} inserted, ${skipped} skipped`,
-                inserted,
-                skipped,
-            });
-        })
-        .on('error', (err) => {
-            fs.unlinkSync(filePath);
-            return res.status(500).json({ success: false, message: err.message });
+    try {
+        await new Promise((resolve, reject) => {
+            fs.createReadStream(filePath)
+                .pipe(csvParser())
+                .on('data', (row) => {
+                    const rawPhone = (row.phone || row.Phone || row.PHONE || '').trim();
+                    const name = (row.name || row.Name || row.NAME || '').trim();
+                    const phone = normalizePhone(rawPhone);
+                    if (phone) {
+                        results.push({ name, phone, labels: row.labels || row.Labels || null });
+                    }
+                })
+                .on('end', resolve)
+                .on('error', reject);
         });
+
+        fs.unlinkSync(filePath); // clean up temp file
+
+        if (results.length === 0) {
+            return res.status(400).json({ success: false, message: 'CSV has no valid rows with phone numbers' });
+        }
+
+        let inserted = 0;
+        let skipped = 0;
+
+        for (const contact of results) {
+            try {
+                await db.query(
+                    `INSERT INTO contacts (user_id, name, phone, labels, source)
+           VALUES (?, ?, ?, ?, 'csv')`,
+                    [req.user.id, contact.name, contact.phone, contact.labels]
+                );
+                inserted++;
+            } catch (_) {
+                skipped++; // duplicate or constraint error
+            }
+        }
+
+        return res.json({
+            success: true,
+            message: `CSV import complete: ${inserted} inserted, ${skipped} skipped`,
+            inserted,
+            skipped,
+        });
+    } catch (err) {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        console.error('[Contacts] CSV import error:', err.message);
+        return res.status(500).json({ success: false, message: err.message });
+    }
 });
 
 module.exports = router;
