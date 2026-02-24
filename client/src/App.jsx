@@ -28,7 +28,6 @@ const AppRoutes = () => {
           <Layout />
         </ProtectedRoute>
       }>
-        <index element={<Dashboard />} />
         <Route index element={<Dashboard />} />
         <Route path="connect" element={<Connect />} />
         <Route path="contacts" element={<Contacts />} />

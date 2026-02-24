@@ -11,7 +11,8 @@ import {
     CheckCheck,
     Clock,
     User,
-    ArrowLeft
+    ArrowLeft,
+    Loader2
 } from 'lucide-react';
 import api from '../utils/api';
 import { useApp } from '../AppContext';
@@ -41,7 +42,8 @@ const Chat = () => {
     const fetchMessages = async (phone) => {
         setLoadingMsg(true);
         try {
-            const { data } = await api.get(`/chats/${phone}`);
+            // Encode JID for URL safety (handles @g.us, etc)
+            const { data } = await api.get(`/chats/${encodeURIComponent(phone)}`);
             setMessages(data.messages || []);
             scrollToBottom();
         } catch (err) {
@@ -104,7 +106,7 @@ const Chat = () => {
         scrollToBottom();
 
         try {
-            await api.post(`/chats/${selectedChat.contact_phone}/send`, { message: msgBody });
+            await api.post(`/chats/${encodeURIComponent(selectedChat.contact_phone)}/send`, { message: msgBody });
             // The socket event will trigger (if backend emits on manual send) 
             // or we can just leave the optimistic one. My backend emits manually so it should duplicate.
             // Better: filter optimistic out when real one arrives or just fetch history.
@@ -153,13 +155,17 @@ const Chat = () => {
                             </div>
                             <div className="flex-1 min-w-0">
                                 <div className="flex justify-between items-baseline mb-0.5">
-                                    <h4 className="font-bold text-sm text-[#111b21] truncate">+{chat.contact_phone}</h4>
+                                    <h4 className="font-bold text-sm text-[#111b21] truncate">
+                                        {chat.contact_phone.includes('@g.us') ? 'Group Chat' : `+${chat.contact_phone.split('@')[0]}`}
+                                    </h4>
                                     <span className="text-[10px] text-[#667781] font-medium">
                                         {new Date(chat.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </span>
                                 </div>
                                 <div className="flex justify-between items-center">
-                                    <p className="text-xs text-[#667781] truncate pr-2">Tap to view chat history...</p>
+                                    <p className="text-xs text-[#667781] truncate pr-2">
+                                        {chat.contact_phone.includes('@g.us') ? 'View group messages...' : 'Tap to view chat history...'}
+                                    </p>
                                     <span className="bg-[#00a884] text-white text-[9px] font-black px-2 py-0.5 rounded-full">{chat.message_count}</span>
                                 </div>
                             </div>
@@ -194,8 +200,12 @@ const Chat = () => {
                                     <User size={20} />
                                 </div>
                                 <div>
-                                    <h4 className="font-bold text-[#111b21]">+{selectedChat.contact_phone}</h4>
-                                    <p className="text-[10px] text-[#00a884] font-black uppercase tracking-wider">Online</p>
+                                    <h4 className="font-bold text-[#111b21]">
+                                        {selectedChat.contact_phone.includes('@g.us') ? 'Group Chat' : `+${selectedChat.contact_phone.split('@')[0]}`}
+                                    </h4>
+                                    <p className="text-[10px] text-[#00a884] font-black uppercase tracking-wider">
+                                        {selectedChat.contact_phone.includes('@g.us') ? 'Group' : 'Online'}
+                                    </p>
                                 </div>
                             </div>
                             <div className="flex gap-4 text-gray-400">

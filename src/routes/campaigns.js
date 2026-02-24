@@ -1,7 +1,7 @@
 const express = require('express');
 const db = require('../config/db');
 const { authMiddleware } = require('../middleware/auth');
-const { runCampaign, stopCampaign } = require('../services/CampaignRunner');
+const { runCampaign, stopCampaign, getLiveProgress } = require('../services/CampaignRunner');
 
 /**
  * Factory so routes have access to SessionManager and io.
@@ -19,7 +19,17 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
           ORDER BY created_at DESC`,
                 [req.user.id]
             );
-            return res.json({ success: true, campaigns: rows });
+
+            // Augment with live progress if running
+            const augmented = rows.map(c => {
+                if (c.status === 'processing') {
+                    const live = getLiveProgress(c.id);
+                    return live ? { ...c, ...live } : c;
+                }
+                return c;
+            });
+
+            return res.json({ success: true, campaigns: augmented });
         } catch (err) {
             console.error('[Campaigns] List error:', err.message);
             return res.status(500).json({ success: false, message: 'Server error' });
@@ -121,6 +131,28 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
             return res.json({ success: true, message: 'Campaign stop signal sent.' });
         } else {
             return res.status(400).json({ success: false, message: 'Campaign is not running.' });
+        }
+    });
+
+    // ── PUT /campaigns/:id ───────────────────────────────────
+    router.put('/:id', authMiddleware, async (req, res) => {
+        const { name, message } = req.body;
+        const campaignId = req.params.id;
+
+        try {
+            const [result] = await db.query(
+                `UPDATE campaigns SET name = ?, message = ?
+           WHERE id = ? AND user_id = ?`,
+                [name, message, campaignId, req.user.id]
+            );
+
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ success: false, message: 'Campaign not found' });
+            }
+            return res.json({ success: true, message: 'Campaign updated' });
+        } catch (err) {
+            console.error('[Campaigns] Update error:', err.message);
+            return res.status(500).json({ success: false, message: 'Server error' });
         }
     });
 

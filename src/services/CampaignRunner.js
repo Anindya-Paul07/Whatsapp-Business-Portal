@@ -1,7 +1,14 @@
 const db = require('../config/db');
+const { formatToJID } = require('../utils/jid');
 
 /** @type {Map<number, boolean>} campaignId -> isRunning */
 const activeCampaigns = new Map();
+/** @type {Map<number, object>} campaignId -> latestUpdateData */
+const liveProgress = new Map();
+
+function getLiveProgress(campaignId) {
+    return liveProgress.get(parseInt(campaignId, 10)) || null;
+}
 
 /**
  * Advanced Anti-Detection Helpers
@@ -29,6 +36,14 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
     let rateLimitCooling = false;
 
     activeCampaigns.set(campaignId, true);
+    liveProgress.set(campaignId, {
+        campaignId,
+        status: 'processing',
+        progress: 0,
+        sentCount: 0,
+        failCount: 0,
+        total: contacts.length
+    });
 
     await db.query(`UPDATE campaigns SET status = 'processing' WHERE id = ?`, [campaignId]);
 
@@ -52,7 +67,7 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
         }
 
         const contact = contacts[i];
-        const chatId = contact.phone.replace(/\D/g, '') + '@c.us';
+        const chatId = formatToJID(contact.phone);
 
         // --- Message Preparation ---
         let content = message.replace(/\{\{name\}\}/gi, contact.name || '');
@@ -62,18 +77,22 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
         try {
             // --- Human-Like Behaviour Wrapper ---
             await client.sendPresenceAvailable();
-            const chat = await client.getChatById(chatId);
 
-            // Simulating typing based on content length
-            const typingSpeed = 50; // ms per char
-            const typingTime = Math.min(content.length * typingSpeed, 10000); // capped at 10s for UX
+            // Try to simulate typing, but don't crash if getChat fails (e.g. invalid number)
+            try {
+                const chat = await client.getChatById(chatId);
+                const typingSpeed = 50; // ms per char
+                const typingTime = Math.min(content.length * typingSpeed, 10000); // capped at 10s for UX
 
-            console.log(`Status: Simulating Typing for ${contact.phone}... ${(typingTime / 1000).toFixed(1)}s`);
-            await chat.sendStateTyping();
-            await new Promise(r => setTimeout(r, typingTime));
+                console.log(`Status: Simulating Typing for ${contact.phone}... ${(typingTime / 1000).toFixed(1)}s`);
+                await chat.sendStateTyping();
+                await new Promise(r => setTimeout(r, typingTime));
+                await chat.clearState();
+            } catch (chatError) {
+                console.warn(`[CampaignRunner] Could not simulate typing for ${contact.phone}, sending directly.`);
+            }
 
-            const msgResult = await client.sendMessage(chatId, content);
-            await chat.clearState();
+            await client.sendMessage(chatId, content);
 
             // Log outbound
             await db.query(
@@ -97,7 +116,7 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
         }
 
         // 4. Progress Update
-        io.to(room).emit('campaign_update', {
+        const updateData = {
             campaignId,
             status: 'processing',
             progress: Math.round(((i + 1) / contacts.length) * 100),
@@ -106,7 +125,10 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
             sentCount,
             failCount,
             total: contacts.length
-        });
+        };
+
+        liveProgress.set(campaignId, updateData);
+        io.to(room).emit('campaign_update', updateData);
 
         // 5. Smart Delay between messages
         if (i < contacts.length - 1 && activeCampaigns.get(campaignId)) {
@@ -134,6 +156,7 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
     });
 
     activeCampaigns.delete(campaignId);
+    liveProgress.delete(campaignId);
 }
 
 function stopCampaign(campaignId) {
@@ -144,4 +167,4 @@ function stopCampaign(campaignId) {
     return false;
 }
 
-module.exports = { runCampaign, stopCampaign };
+module.exports = { runCampaign, stopCampaign, getLiveProgress };

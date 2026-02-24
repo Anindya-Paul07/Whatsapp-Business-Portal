@@ -9,7 +9,9 @@ import {
     FileSpreadsheet,
     CheckCircle,
     AlertCircle,
-    Loader2
+    Loader2,
+    Edit2,
+    Trash2
 } from 'lucide-react';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
@@ -21,10 +23,12 @@ const Contacts = () => {
     const [showAddModal, setShowAddModal] = useState(false);
     const [showImportModal, setShowImportModal] = useState(false);
 
-    // Create Modal State
+    // Create/Edit Modal State
     const [name, setName] = useState('');
     const [phone, setPhone] = useState('');
+    const [countryCode, setCountryCode] = useState('880');
     const [labels, setLabels] = useState('');
+    const [editContact, setEditContact] = useState(null); // null for add, contact object for edit
 
     // Import State
     const [file, setFile] = useState(null);
@@ -48,16 +52,70 @@ const Contacts = () => {
         fetchContacts();
     }, []);
 
+    const handleOpenAdd = () => {
+        setEditContact(null);
+        setName(''); setPhone(''); setLabels(''); setCountryCode('880');
+        setShowAddModal(true);
+    };
+
+    const handleOpenEdit = (contact) => {
+        setEditContact(contact);
+        setName(contact.name);
+        setLabels(contact.labels || '');
+
+        // Try to separate country code and phone
+        let p = contact.phone;
+        const codes = ['880', '91', '1', '44', '971', '966', '60', '65'];
+        let detectedCode = '880';
+        for (const code of codes) {
+            if (p.startsWith(code)) {
+                detectedCode = code;
+                p = p.substring(code.length);
+                break;
+            }
+        }
+        setCountryCode(detectedCode);
+        setPhone(p);
+        setShowAddModal(true);
+    };
+
     const handleAddContact = async (e) => {
         e.preventDefault();
         try {
-            await api.post('/contacts', { name, phone, labels });
-            toast.success('Contact added successfully');
+            // Remove non-digits
+            let cleanedPhone = phone.replace(/\D/g, '');
+            // Strip leading zero if it exists (trunk prefix)
+            if (cleanedPhone.startsWith('0')) {
+                cleanedPhone = cleanedPhone.substring(1);
+            }
+            // Prepend country code
+            const fullPhone = countryCode + cleanedPhone;
+
+            if (editContact) {
+                await api.put(`/contacts/${editContact.id}`, { name, phone: fullPhone, labels });
+                toast.success('Contact updated');
+            } else {
+                await api.post('/contacts', { name, phone: fullPhone, labels });
+                toast.success('Contact added successfully');
+            }
+
             setShowAddModal(false);
             setName(''); setPhone(''); setLabels('');
+            setEditContact(null);
             fetchContacts();
         } catch (err) {
-            toast.error(err.response?.data?.message || 'Failed to add contact');
+            toast.error(err.response?.data?.message || 'Operation failed');
+        }
+    };
+
+    const handleDeleteContact = async (id) => {
+        if (!window.confirm('Are you sure you want to delete this contact?')) return;
+        try {
+            await api.delete(`/contacts/${id}`);
+            toast.success('Contact deleted');
+            fetchContacts();
+        } catch (err) {
+            toast.error('Failed to delete contact');
         }
     };
 
@@ -96,7 +154,7 @@ const Contacts = () => {
                         <Upload size={18} />
                         <span>Import CSV</span>
                     </button>
-                    <button onClick={() => setShowAddModal(true)} className="btn-primary">
+                    <button onClick={handleOpenAdd} className="btn-primary">
                         <Plus size={18} />
                         <span>Add Contact</span>
                     </button>
@@ -173,9 +231,22 @@ const Contacts = () => {
                                         </span>
                                     </td>
                                     <td className="table-td text-right">
-                                        <button className="p-1 hover:bg-gray-200 rounded transition-colors text-gray-400">
-                                            <MoreHorizontal size={18} />
-                                        </button>
+                                        <div className="flex justify-end gap-2">
+                                            <button
+                                                onClick={() => handleOpenEdit(contact)}
+                                                className="p-1.5 hover:bg-blue-50 hover:text-blue-600 rounded-lg transition-colors text-gray-400"
+                                                title="Edit Contact"
+                                            >
+                                                <Edit2 size={16} />
+                                            </button>
+                                            <button
+                                                onClick={() => handleDeleteContact(contact.id)}
+                                                className="p-1.5 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors text-gray-400"
+                                                title="Delete Contact"
+                                            >
+                                                <Trash2 size={16} />
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             ))}
@@ -190,8 +261,8 @@ const Contacts = () => {
                     <div className="card w-full max-w-md animate-fade-in p-0 overflow-hidden">
                         <div className="p-4 border-b flex justify-between items-center bg-gray-50">
                             <h3 className="font-bold flex items-center gap-2">
-                                <UserPlus size={18} className="text-[#00a884]" />
-                                <span>New Contact</span>
+                                {editContact ? <Edit2 size={18} className="text-blue-500" /> : <UserPlus size={18} className="text-[#00a884]" />}
+                                <span>{editContact ? 'Edit Contact' : 'New Contact'}</span>
                             </h3>
                             <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-red-500">
                                 <X size={20} />
@@ -208,10 +279,27 @@ const Contacts = () => {
                             </div>
                             <div>
                                 <label className="label">WhatsApp Number</label>
-                                <input
-                                    type="text" className="input" placeholder="e.g. 919876543210" required
-                                    value={phone} onChange={e => setPhone(e.target.value)}
-                                />
+                                <div className="flex gap-2">
+                                    <select
+                                        className="input w-32 bg-gray-50 border-gray-200 text-sm font-bold"
+                                        value={countryCode}
+                                        onChange={e => setCountryCode(e.target.value)}
+                                    >
+                                        <option value="880">BD (+880)</option>
+                                        <option value="91">IN (+91)</option>
+                                        <option value="1">US/CA (+1)</option>
+                                        <option value="44">UK (+44)</option>
+                                        <option value="971">UAE (+971)</option>
+                                        <option value="966">KSA (+966)</option>
+                                        <option value="60">MY (+60)</option>
+                                        <option value="65">SG (+65)</option>
+                                    </select>
+                                    <input
+                                        type="text" className="input flex-1" placeholder="e.g. 1712345678" required
+                                        value={phone} onChange={e => setPhone(e.target.value)}
+                                    />
+                                </div>
+                                <p className="text-[10px] text-gray-400 mt-1 font-medium">Selected: +{countryCode}{phone}</p>
                             </div>
                             <div>
                                 <label className="label">Labels (Comma separated)</label>
@@ -223,7 +311,9 @@ const Contacts = () => {
 
                             <div className="pt-4 flex gap-3">
                                 <button type="button" onClick={() => setShowAddModal(false)} className="btn-ghost flex-1 border">Cancel</button>
-                                <button type="submit" className="btn-primary flex-1 justify-center">Add Contact</button>
+                                <button type="submit" className="btn-primary flex-1 justify-center">
+                                    {editContact ? 'Update Contact' : 'Add Contact'}
+                                </button>
                             </div>
                         </form>
                     </div>

@@ -1,6 +1,7 @@
 const express = require('express');
 const db = require('../config/db');
 const { authMiddleware } = require('../middleware/auth');
+const { formatToJID } = require('../utils/jid');
 
 /**
  * Factory — needs sessionManager to send manual replies.
@@ -11,7 +12,9 @@ module.exports = function createChatRoutes(sessionManager) {
     // ── GET /chats/:phone ─────────────────────────────────────────
     // Fetch message history with a specific contact.
     router.get('/:phone', authMiddleware, async (req, res) => {
-        const { phone } = req.params;
+        let { phone } = req.params;
+        // Decode in case it's a JID with @
+        phone = decodeURIComponent(phone);
         const limit = parseInt(req.query.limit || '50', 10);
         const offset = parseInt(req.query.offset || '0', 10);
 
@@ -72,7 +75,7 @@ module.exports = function createChatRoutes(sessionManager) {
 
         try {
             const client = sessionManager.getOrCreateSession(userId);
-            const chatId = phone.replace(/\D/g, '') + '@c.us';
+            const chatId = formatToJID(phone);
 
             await client.sendMessage(chatId, message);
 

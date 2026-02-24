@@ -7,7 +7,9 @@ import {
     FileSpreadsheet,
     AlertCircle,
     Loader2,
-    Trash2
+    Trash2,
+    Edit2,
+    RotateCcw
 } from 'lucide-react';
 import api from '../utils/api';
 import { useApp } from '../AppContext';
@@ -19,11 +21,12 @@ const Campaigns = () => {
     const [campaigns, setCampaigns] = useState([]);
     const [loading, setLoading] = useState(true);
 
-    // Create Campaign State
+    // Create/Edit Campaign State
     const [name, setName] = useState('');
     const [message, setMessage] = useState('');
     const [source, setSource] = useState('database'); // 'database' | 'csv'
     const [submitting, setSubmitting] = useState(false);
+    const [editCampaign, setEditCampaign] = useState(null); // null for create, object for edit
 
     // Active Running Campaign
     const [activeRunning, setActiveRunning] = useState(null);
@@ -37,13 +40,16 @@ const Campaigns = () => {
             // Check if any campaign is currently 'processing'
             const processing = (data.campaigns || []).find(c => c.status === 'processing');
             if (processing) {
-                // Approximate existing data for the progress component
+                // Use live data if it exists, fallback to DB fields
                 setActiveRunning({
                     ...processing,
-                    progress: Math.round(((processing.sent_count || 0) / ((processing.sent_count + processing.fail_count) || 1)) * 100),
-                    sentCount: processing.sent_count,
-                    failCount: processing.fail_count
+                    progress: processing.progress ?? 0,
+                    sentCount: processing.sentCount ?? processing.sent_count,
+                    failCount: processing.failCount ?? processing.fail_count,
+                    total: processing.total || (processing.sent_count + processing.fail_count) || 100
                 });
+            } else {
+                setActiveRunning(null);
             }
         } catch (err) {
             toast.error('Failed to load campaigns');
@@ -56,23 +62,46 @@ const Campaigns = () => {
         fetchCampaigns();
     }, []);
 
-    const handleCreate = async (e) => {
+    const handleOpenEdit = (campaign) => {
+        setEditCampaign(campaign);
+        setName(campaign.name);
+        setMessage(campaign.message);
+        // Scroll to top to see the form
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
+    const handleCancelEdit = () => {
+        setEditCampaign(null);
+        setName('');
+        setMessage('');
+    };
+
+    const handleSave = async (e) => {
         e.preventDefault();
         if (whatsappStatus !== 'ready') {
             return toast.error('WhatsApp not connected. Please go to Connect tab.');
         }
         setSubmitting(true);
         try {
-            const { data } = await api.post('/campaigns', { name, message });
-            if (data.success) {
-                // Automatically trigger 'run' after creation for simplicity in this demo
-                await api.post(`/campaigns/${data.campaignId}/run`, { fromSource: source });
-                toast.success('Campaign created and started!');
-                setName(''); setMessage('');
-                fetchCampaigns();
+            if (editCampaign) {
+                // Update existing
+                await api.put(`/campaigns/${editCampaign.id}`, { name, message });
+                toast.success('Campaign updated');
+                setEditCampaign(null);
+            } else {
+                // Create new
+                const { data } = await api.post('/campaigns', { name, message });
+                if (data.success) {
+                    // Automatically trigger 'run' after creation
+                    await api.post(`/campaigns/${data.campaignId}/run`, { fromSource: source });
+                    toast.success('Campaign started!');
+                }
             }
+
+            setName(''); setMessage('');
+            fetchCampaigns();
         } catch (err) {
-            toast.error(err.response?.data?.message || 'Failed to start campaign');
+            toast.error(err.response?.data?.message || 'Operation failed');
         } finally {
             setSubmitting(false);
         }
@@ -109,11 +138,11 @@ const Campaigns = () => {
                 <div className="lg:col-span-1 space-y-6">
                     <div className="card">
                         <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-                            <Play size={18} className="text-[#00a884]" />
-                            <span>Launch New Campaign</span>
+                            {editCampaign ? <Edit2 size={18} className="text-blue-500" /> : <Play size={18} className="text-[#00a884]" />}
+                            <span>{editCampaign ? 'Update Campaign' : 'Launch New Campaign'}</span>
                         </h3>
 
-                        <form onSubmit={handleCreate} className="space-y-4">
+                        <form onSubmit={handleSave} className="space-y-4">
                             <div>
                                 <label className="label">Campaign Name</label>
                                 <input
@@ -122,27 +151,29 @@ const Campaigns = () => {
                                 />
                             </div>
 
-                            <div>
-                                <label className="label">Select Audience Source</label>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <button
-                                        type="button"
-                                        onClick={() => setSource('database')}
-                                        className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${source === 'database' ? 'border-[#00a884] bg-[#e7f8f3] text-[#00a884]' : 'border-[#e9edef] bg-gray-50 text-[#667781]'}`}
-                                    >
-                                        <Database size={16} />
-                                        <span>Database</span>
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setSource('csv')}
-                                        className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${source === 'csv' ? 'border-[#00a884] bg-[#e7f8f3] text-[#00a884]' : 'border-[#e9edef] bg-gray-50 text-[#667781]'}`}
-                                    >
-                                        <FileSpreadsheet size={16} />
-                                        <span>Import CSV</span>
-                                    </button>
+                            {!editCampaign && (
+                                <div>
+                                    <label className="label">Select Audience Source</label>
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <button
+                                            type="button"
+                                            onClick={() => setSource('database')}
+                                            className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${source === 'database' ? 'border-[#00a884] bg-[#e7f8f3] text-[#00a884]' : 'border-[#e9edef] bg-gray-50 text-[#667781]'}`}
+                                        >
+                                            <Database size={16} />
+                                            <span>Database</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setSource('csv')}
+                                            className={`flex items-center justify-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${source === 'csv' ? 'border-[#00a884] bg-[#e7f8f3] text-[#00a884]' : 'border-[#e9edef] bg-gray-50 text-[#667781]'}`}
+                                        >
+                                            <FileSpreadsheet size={16} />
+                                            <span>Import CSV</span>
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
+                            )}
 
                             <div>
                                 <div className="flex justify-between items-end mb-1">
@@ -157,13 +188,26 @@ const Campaigns = () => {
                                 ></textarea>
                             </div>
 
-                            <button
-                                type="submit"
-                                disabled={submitting || whatsappStatus !== 'ready'}
-                                className="btn-primary w-full py-4 justify-center shadow-lg shadow-[#00a884]/20 disabled:grayscale disabled:opacity-50"
-                            >
-                                {submitting ? <Loader2 className="animate-spin" size={20} /> : <><Send size={18} /><span>Launch Campaign</span></>}
-                            </button>
+                            <div className="flex gap-3">
+                                <button
+                                    type="submit"
+                                    disabled={submitting || whatsappStatus !== 'ready'}
+                                    className="btn-primary flex-1 py-4 justify-center shadow-lg shadow-[#00a884]/20 disabled:grayscale disabled:opacity-50"
+                                >
+                                    {submitting ? <Loader2 className="animate-spin" size={20} /> : (
+                                        editCampaign ? <><Edit2 size={18} /><span>Update Campaign</span></> : <><Send size={18} /><span>Launch Campaign</span></>
+                                    )}
+                                </button>
+                                {editCampaign && (
+                                    <button
+                                        type="button"
+                                        onClick={handleCancelEdit}
+                                        className="btn-ghost border p-4 text-gray-400 hover:text-red-500"
+                                    >
+                                        <RotateCcw size={18} />
+                                    </button>
+                                )}
+                            </div>
 
                             {whatsappStatus !== 'ready' && (
                                 <div className="p-3 rounded-xl bg-red-50 text-red-600 text-[10px] font-bold uppercase flex gap-2 items-center">
@@ -231,9 +275,22 @@ const Campaigns = () => {
                                                 {new Date(c.created_at).toLocaleDateString()}
                                             </td>
                                             <td className="table-td text-right">
-                                                <button onClick={() => handleDelete(c.id)} className="p-2 text-gray-300 hover:text-red-500 transition-colors">
-                                                    <Trash2 size={16} />
-                                                </button>
+                                                <div className="flex justify-end gap-1">
+                                                    <button
+                                                        onClick={() => handleOpenEdit(c)}
+                                                        className="p-2 text-gray-300 hover:text-blue-500 transition-colors"
+                                                        title="Edit Campaign"
+                                                    >
+                                                        <Edit2 size={16} />
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDelete(c.id)}
+                                                        className="p-2 text-gray-300 hover:text-red-500 transition-colors"
+                                                        title="Delete Campaign"
+                                                    >
+                                                        <Trash2 size={16} />
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
                                     ))}
