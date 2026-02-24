@@ -12,28 +12,35 @@ import api from '../utils/api';
 export const useWhatsAppSession = (user) => {
     const [qrCode, setQrCode] = useState(null);
     const [status, setStatus] = useState('loading'); // 'loading' | 'qr' | 'ready' | 'disconnected'
+    const [socket, setSocket] = useState(null);
     const socketRef = useRef(null);
 
     const isScanning = status === 'qr';
 
-    const connectSocket = useCallback(() => {
-        if (!user) return;
+    useEffect(() => {
+        if (!user) {
+            if (socketRef.current) {
+                socketRef.current.disconnect();
+                socketRef.current = null;
+                setSocket(null);
+            }
+            return;
+        }
 
         const token = localStorage.getItem('token');
 
-        // Initialize socket only once
-        if (!socketRef.current) {
-            socketRef.current = io('/', {
-                auth: { token },
-                transports: ['websocket', 'polling']
-            });
-        }
+        // Initialize socket
+        const newSocket = io('/', {
+            auth: { token },
+            transports: ['websocket', 'polling']
+        });
 
-        const socket = socketRef.current;
+        socketRef.current = newSocket;
+        setSocket(newSocket);
 
         // --- Event Listeners ---
 
-        socket.on('connect', () => {
+        newSocket.on('connect', () => {
             console.log('[useWhatsAppSession] Socket connected');
             // Check initial status from API
             api.get('/sessions/status').then(res => {
@@ -43,13 +50,13 @@ export const useWhatsAppSession = (user) => {
             }).catch(() => setStatus('disconnected'));
         });
 
-        socket.on('qr_code', (data) => {
+        newSocket.on('qr_code', (data) => {
             console.log('[useWhatsAppSession] QR Received');
             setQrCode(data.qr);
             setStatus('qr');
         });
 
-        socket.on('session_status', (data) => {
+        newSocket.on('session_status', (data) => {
             console.log('[useWhatsAppSession] Status Change:', data.status);
             if (data.status === 'ready') {
                 setQrCode(null);
@@ -62,12 +69,12 @@ export const useWhatsAppSession = (user) => {
             }
         });
 
-        socket.on('session_error', (data) => {
+        newSocket.on('session_error', (data) => {
             toast.error(data.error || 'Connection error');
             setStatus('disconnected');
         });
 
-        socket.on('message_received', (data) => {
+        newSocket.on('message_received', (data) => {
             // Optional: Notify on new inbound messages if not on chat page
             if (data.direction === 'in' && window.location.pathname !== '/chat') {
                 toast(`New message from ${data.contactPhone}`, {
@@ -78,26 +85,12 @@ export const useWhatsAppSession = (user) => {
         });
 
         return () => {
-            console.log('[useWhatsAppSession] Cleaning up listeners');
-            socket.off('connect');
-            socket.off('qr_code');
-            socket.off('session_status');
-            socket.off('session_error');
-            socket.off('message_received');
+            console.log('[useWhatsAppSession] Cleaning up socket');
+            newSocket.disconnect();
+            socketRef.current = null;
+            setSocket(null);
         };
     }, [user]);
-
-    useEffect(() => {
-        const cleanup = connectSocket();
-
-        return () => {
-            if (cleanup) cleanup();
-            if (socketRef.current) {
-                socketRef.current.disconnect();
-                socketRef.current = null;
-            }
-        };
-    }, [connectSocket]);
 
     /**
      * Reconnect / Initialize session
@@ -134,7 +127,7 @@ export const useWhatsAppSession = (user) => {
         isScanning,
         sendMessage,
         reconnect,
-        socket: socketRef.current
+        socket
     };
 };
 

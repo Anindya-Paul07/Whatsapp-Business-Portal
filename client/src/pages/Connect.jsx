@@ -1,11 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
     QrCode,
     CheckCircle2,
     Power,
     Loader2,
     RefreshCw,
-    AlertCircle,
     Smartphone
 } from 'lucide-react';
 import { useApp } from '../AppContext';
@@ -13,45 +12,16 @@ import api from '../utils/api';
 import toast from 'react-hot-toast';
 
 const Connect = () => {
-    const { whatsappStatus, setWhatsappStatus, socket } = useApp();
-    const [qr, setQr] = useState(null);
+    const { whatsappStatus, setWhatsappStatus, qrCode, status, reconnect } = useApp();
     const [loading, setLoading] = useState(false);
-
-    useEffect(() => {
-        if (socket) {
-            socket.on('qr_code', (data) => {
-                setQr(data.qr);
-                setLoading(false);
-            });
-
-            socket.on('session_status', (data) => {
-                if (data.status === 'ready') {
-                    setQr(null);
-                    setLoading(false);
-                } else if (data.status === 'disconnected') {
-                    setLoading(false);
-                    setQr(null);
-                }
-            });
-
-            socket.on('session_error', (data) => {
-                toast.error(data.error || 'Connection failed');
-                setLoading(false);
-            });
-        }
-    }, [socket]);
 
     const initSession = async () => {
         setLoading(true);
         try {
-            const { data } = await api.post('/sessions/init');
-            if (data.status === 'ready') {
-                setWhatsappStatus('ready');
-                setLoading(false);
-            }
-            // If it's initializing, we wait for 'qr' event via socket
+            await reconnect();
         } catch (err) {
             toast.error('Failed to initialize session');
+        } finally {
             setLoading(false);
         }
     };
@@ -60,12 +30,13 @@ const Connect = () => {
         try {
             await api.delete('/sessions/destroy');
             setWhatsappStatus('not_connected');
-            setQr(null);
             toast.success('Session disconnected');
         } catch (err) {
             toast.error('Failed to disconnect session');
         }
     };
+
+    const isLoading = loading || status === 'loading';
 
     return (
         <div className="max-w-4xl mx-auto space-y-8">
@@ -111,11 +82,11 @@ const Connect = () => {
                                 </p>
                                 <button
                                     onClick={initSession}
-                                    disabled={loading}
+                                    disabled={isLoading}
                                     className="btn-primary mt-8 w-full justify-center"
                                 >
-                                    {loading ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
-                                    <span>{loading ? 'Starting Instance...' : 'Initialize Instance'}</span>
+                                    {isLoading ? <Loader2 size={18} className="animate-spin" /> : <RefreshCw size={18} />}
+                                    <span>{isLoading ? 'Starting Instance...' : 'Initialize Instance'}</span>
                                 </button>
                             </>
                         )}
@@ -130,10 +101,10 @@ const Connect = () => {
                     </div>
 
                     <div className="flex-1 flex flex-col items-center justify-center p-6 border-2 border-dashed border-[#e9edef] rounded-xl">
-                        {qr ? (
+                        {qrCode ? (
                             <div className="bg-white p-4 rounded-xl shadow-inner border">
                                 <img
-                                    src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qr)}`}
+                                    src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(qrCode)}`}
                                     alt="WhatsApp QR Code"
                                     className="w-[200px] h-[200px]"
                                 />
@@ -146,7 +117,7 @@ const Connect = () => {
                             </div>
                         ) : (
                             <div className="text-center">
-                                {loading ? (
+                                {isLoading ? (
                                     <div className="flex flex-col items-center gap-4">
                                         <div className="w-12 h-12 border-4 border-[#00a884] border-t-transparent rounded-full animate-spin"></div>
                                         <p className="text-sm font-medium text-[#667781]">Waiting for QR Code...</p>

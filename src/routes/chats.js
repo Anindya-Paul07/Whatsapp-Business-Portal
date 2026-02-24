@@ -15,6 +15,9 @@ module.exports = function createChatRoutes(sessionManager) {
         const limit = parseInt(req.query.limit || '50', 10);
         const offset = parseInt(req.query.offset || '0', 10);
 
+        // Normalize phone for searching
+        const cleanPhone = phone.replace(/\D/g, '');
+
         try {
             const [rows] = await db.query(
                 `SELECT id, body, direction, created_at
@@ -22,7 +25,7 @@ module.exports = function createChatRoutes(sessionManager) {
           WHERE user_id = ? AND contact_phone = ?
           ORDER BY created_at DESC
           LIMIT ? OFFSET ?`,
-                [req.user.id, phone, limit, offset]
+                [req.user.id, cleanPhone, limit, offset]
             );
             return res.json({ success: true, messages: rows.reverse() });
         } catch (err) {
@@ -56,11 +59,16 @@ module.exports = function createChatRoutes(sessionManager) {
     // Send a manual reply to a specific contact.
     router.post('/:phone/send', authMiddleware, async (req, res) => {
         const userId = req.user.id;
-        const phone = req.params.phone;
+        const rawPhone = req.params.phone;
         const { message } = req.body;
 
         if (!message) {
             return res.status(400).json({ success: false, message: 'message body is required' });
+        }
+
+        const phone = rawPhone.replace(/\D/g, '');
+        if (!phone) {
+            return res.status(400).json({ success: false, message: 'Invalid phone number' });
         }
 
         if (!sessionManager.isReady(userId)) {
@@ -72,7 +80,7 @@ module.exports = function createChatRoutes(sessionManager) {
 
         try {
             const client = sessionManager.getOrCreateSession(userId);
-            const chatId = phone.replace(/\D/g, '') + '@c.us';
+            const chatId = phone + '@c.us';
 
             await client.sendMessage(chatId, message);
 
