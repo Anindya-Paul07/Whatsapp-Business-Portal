@@ -25,6 +25,7 @@ const Campaigns = () => {
 
     const [source, setSource] = useState('database'); // 'database' | 'csv'
     const [csvFile, setCsvFile] = useState(null);
+    const [mediaFile, setMediaFile] = useState(null);
     const [submitting, setSubmitting] = useState(false);
     const [editCampaign, setEditCampaign] = useState(null);
 
@@ -492,46 +493,47 @@ const Campaigns = () => {
                                             )}
                                         </div>
                                     )}
-                                    dangerouslySetInnerHTML={{ __html: previewMessage || '<span class="text-gray-400 italic">Your message will appear here...</span>' }}
+                                    <p className="text-gray-800 text-[15px] font-medium leading-relaxed"
+                                        dangerouslySetInnerHTML={{ __html: previewMessage || '<span class="text-gray-400 italic">Your message will appear here...</span>' }}
                                     ></p>
 
-                                {templateButtons && templateButtons.length > 0 && (
-                                    <div className="mt-4 flex flex-col gap-2">
-                                        {templateButtons.map((btn, idx) => (
-                                            <div key={idx} className="w-full text-center text-[#00a884] bg-white border border-[#00a884] py-2 rounded-xl text-xs font-black uppercase tracking-wider shadow-sm">
-                                                {btn.text}
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
+                                    {templateButtons && templateButtons.length > 0 && (
+                                        <div className="mt-4 flex flex-col gap-2">
+                                            {templateButtons.map((btn, idx) => (
+                                                <div key={idx} className="w-full text-center text-[#00a884] bg-white border border-[#00a884] py-2 rounded-xl text-xs font-black uppercase tracking-wider shadow-sm">
+                                                    {btn.text}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
 
-                                <div className="flex justify-end items-center gap-1.5 mt-3 pr-1">
-                                    <span className="text-[10px] text-gray-400 font-bold">12:45 PM</span>
-                                    <div className="flex">
-                                        <Check size={14} className="text-blue-500 -mr-1.5" />
-                                        <Check size={14} className="text-blue-500" />
+                                    <div className="flex justify-end items-center gap-1.5 mt-3 pr-1">
+                                        <span className="text-[10px] text-gray-400 font-bold">12:45 PM</span>
+                                        <div className="flex">
+                                            <Check size={14} className="text-blue-500 -mr-1.5" />
+                                            <Check size={14} className="text-blue-500" />
+                                        </div>
                                     </div>
+                                    {/* Tail */}
+                                    <div className="absolute top-0 -right-2 w-4 h-4 bg-white transform -skew-x-[30deg] -translate-y-px"></div>
                                 </div>
-                                {/* Tail */}
-                                <div className="absolute top-0 -right-2 w-4 h-4 bg-white transform -skew-x-[30deg] -translate-y-px"></div>
                             </div>
                         </div>
-                    </div>
 
-                    <div className="bg-white p-6 relative z-10 border-t border-gray-100 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
-                        <div className="bg-gradient-to-r from-amber-50 to-orange-50 p-5 rounded-3xl border border-orange-100/50 flex items-center gap-5">
-                            <div className="w-12 h-12 bg-white rounded-2xl shadow-sm flex items-center justify-center text-orange-500">
-                                <Clock size={24} />
-                            </div>
-                            <div>
-                                <p className="text-xs font-black text-orange-400 uppercase tracking-widest mb-1">Time to Deliver</p>
-                                <p className="text-xl font-black text-orange-600">~{message.length > 0 ? estTime : 0}s <span className="text-sm font-bold text-orange-400">/ contact</span></p>
+                        <div className="bg-white p-6 relative z-10 border-t border-gray-100 shadow-[0_-10px_20px_rgba(0,0,0,0.05)]">
+                            <div className="bg-gradient-to-r from-amber-50 to-orange-50 p-5 rounded-3xl border border-orange-100/50 flex items-center gap-5">
+                                <div className="w-12 h-12 bg-white rounded-2xl shadow-sm flex items-center justify-center text-orange-500">
+                                    <Clock size={24} />
+                                </div>
+                                <div>
+                                    <p className="text-xs font-black text-orange-400 uppercase tracking-widest mb-1">Time to Deliver</p>
+                                    <p className="text-xl font-black text-orange-600">~{message.length > 0 ? estTime : 0}s <span className="text-sm font-bold text-orange-400">/ contact</span></p>
+                                </div>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
-        </div>
         </div >
     );
 };
