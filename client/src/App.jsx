@@ -12,6 +12,7 @@ import Campaigns from './pages/Campaigns';
 import MessageBot from './pages/MessageBot';
 import Templates from './pages/Templates';
 import Chat from './pages/Chat';
+import FlowBuilder from './pages/FlowBuilder';
 
 const ProtectedRoute = ({ children }) => {
   const { user } = useApp();
@@ -36,6 +37,7 @@ const AppRoutes = () => {
         <Route path="message-bot" element={<MessageBot />} />
         <Route path="templates" element={<Templates />} />
         <Route path="chat" element={<Chat />} />
+        <Route path="flows" element={<FlowBuilder />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
