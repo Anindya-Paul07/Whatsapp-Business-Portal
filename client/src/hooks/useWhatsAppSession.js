@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import toast from 'react-hot-toast';
 import api from '../utils/api';
@@ -12,44 +12,49 @@ import api from '../utils/api';
 export const useWhatsAppSession = (user) => {
     const [qrCode, setQrCode] = useState(null);
     const [status, setStatus] = useState('loading'); // 'loading' | 'qr' | 'ready' | 'disconnected'
+    // Track socket in STATE so consumers re-render when it becomes available
+    const [socket, setSocket] = useState(null);
     const socketRef = useRef(null);
 
     const isScanning = status === 'qr';
 
-    const connectSocket = useCallback(() => {
+    useEffect(() => {
         if (!user) return;
 
         const token = localStorage.getItem('token');
 
-        // Initialize socket only once
-        if (!socketRef.current) {
-            socketRef.current = io('/', {
-                auth: { token },
-                transports: ['websocket', 'polling']
-            });
-        }
+        // Create socket once, save to ref AND state so React consumers re-render
+        const sock = io('/', {
+            auth: { token },
+            transports: ['websocket', 'polling']
+        });
+        socketRef.current = sock;
+        setSocket(sock);
 
-        const socket = socketRef.current;
-
-        // --- Event Listeners ---
-
-        socket.on('connect', () => {
+        sock.on('connect', () => {
             console.log('[useWhatsAppSession] Socket connected');
-            // Check initial status from API
+            // Poll the REST API to get the current status immediately on connect
             api.get('/sessions/status').then(res => {
                 if (res.data.success) {
                     setStatus(res.data.status === 'ready' ? 'ready' : 'disconnected');
+                } else {
+                    setStatus('disconnected');
                 }
             }).catch(() => setStatus('disconnected'));
         });
 
-        socket.on('qr_code', (data) => {
+        sock.on('disconnect', () => {
+            console.log('[useWhatsAppSession] Socket disconnected');
+            setStatus('disconnected');
+        });
+
+        sock.on('qr_code', (data) => {
             console.log('[useWhatsAppSession] QR Received');
             setQrCode(data.qr);
             setStatus('qr');
         });
 
-        socket.on('session_status', (data) => {
+        sock.on('session_status', (data) => {
             console.log('[useWhatsAppSession] Status Change:', data.status);
             if (data.status === 'ready') {
                 setQrCode(null);
@@ -62,13 +67,12 @@ export const useWhatsAppSession = (user) => {
             }
         });
 
-        socket.on('session_error', (data) => {
+        sock.on('session_error', (data) => {
             toast.error(data.error || 'Connection error');
             setStatus('disconnected');
         });
 
-        socket.on('message_received', (data) => {
-            // Optional: Notify on new inbound messages if not on chat page
+        sock.on('message_received', (data) => {
             if (data.direction === 'in' && window.location.pathname !== '/chat') {
                 toast(`New message from ${data.contactPhone}`, {
                     icon: '💬',
@@ -77,27 +81,14 @@ export const useWhatsAppSession = (user) => {
             }
         });
 
+        // Cleanup: disconnect and null out refs on unmount
         return () => {
-            console.log('[useWhatsAppSession] Cleaning up listeners');
-            socket.off('connect');
-            socket.off('qr_code');
-            socket.off('session_status');
-            socket.off('session_error');
-            socket.off('message_received');
+            console.log('[useWhatsAppSession] Cleaning up socket');
+            sock.disconnect();
+            socketRef.current = null;
+            setSocket(null);
         };
-    }, [user]);
-
-    useEffect(() => {
-        const cleanup = connectSocket();
-
-        return () => {
-            if (cleanup) cleanup();
-            if (socketRef.current) {
-                socketRef.current.disconnect();
-                socketRef.current = null;
-            }
-        };
-    }, [connectSocket]);
+    }, [user]); // Only re-run if user changes (login/logout)
 
     /**
      * Reconnect / Initialize session
@@ -134,7 +125,7 @@ export const useWhatsAppSession = (user) => {
         isScanning,
         sendMessage,
         reconnect,
-        socket: socketRef.current
+        socket  // from state, not ref — so consumers re-render when socket is ready
     };
 };
 

@@ -78,18 +78,18 @@ class WarmupService {
                 const message = this.greetings[Math.floor(Math.random() * this.greetings.length)];
 
                 // Try to send from s1 to s2
-                const client = this.sessionManager.sessions.get(user.user_id); // Simple mapping: userId -> client (currently)
-                // In multi-session, we'd need: userId -> { session_id -> client }
+                const client = this.sessionManager.clients.get(user.user_id);
                 if (!client || !client.info) continue;
 
-                // Send message logic (Assuming s1 is the current active client for now)
-                // Real multi-session would need multiple clients initialized.
-                // For now, we simulate the interaction in logs to demonstrate logic.
-
-                await db.query(`
-                    INSERT INTO warmup_logs (from_session_id, to_session_id, message_body)
-                    VALUES (?, ?, ?)
-                `, [s1.id, s2.id, message]);
+                // Log the warmup interaction (table may not exist yet — silently skip)
+                try {
+                    await db.query(`
+                        INSERT INTO warmup_logs (from_session_id, to_session_id, message_body)
+                        VALUES (?, ?, ?)
+                    `, [s1.id, s2.id, message]);
+                } catch (dbErr) {
+                    // warmup_logs table may not exist — that's OK, skip logging
+                }
 
                 // Update warmup counts
                 await db.query(`

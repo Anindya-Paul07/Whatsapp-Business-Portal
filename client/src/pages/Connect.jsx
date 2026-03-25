@@ -1,61 +1,39 @@
 import React, { useState, useEffect } from 'react';
 import {
-    QrCode, CheckCircle2, Power, Loader2, RefreshCw, Smartphone, ShieldCheck, Zap
+    QrCode, CheckCircle2, Power, Loader2, Smartphone, ShieldCheck, Zap
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
 
 const Connect = () => {
-    const { whatsappStatus, setWhatsappStatus, socket } = useApp();
-    const [qr, setQr] = useState(null);
+    const { whatsappStatus, socket, qrCode, reconnect } = useApp();
     const [loading, setLoading] = useState(false);
-
-    useEffect(() => {
-        if (socket) {
-            socket.on('qr_code', (data) => {
-                setQr(data.qr);
-                setLoading(false);
-            });
-
-            socket.on('session_status', (data) => {
-                if (data.status === 'ready') {
-                    setQr(null);
-                    setLoading(false);
-                    setWhatsappStatus('ready');
-                } else if (data.status === 'disconnected') {
-                    setLoading(false);
-                    setQr(null);
-                    setWhatsappStatus('not_connected');
-                }
-            });
-
-            socket.on('session_error', (data) => {
-                toast.error(data.error || 'Connection failed');
-                setLoading(false);
-            });
-        }
-    }, [socket, setWhatsappStatus]);
 
     const initSession = async () => {
         setLoading(true);
         try {
-            const { data } = await api.post('/sessions/init');
-            if (data.status === 'ready') {
-                setWhatsappStatus('ready');
-                setLoading(false);
-            }
+            await reconnect();
+            // Status will update reactively via socket events in the hook
         } catch (err) {
             toast.error('Failed to initialize session');
-            setLoading(false);
+        } finally {
+            // Only clear loading if status updates (via socket) haven't done it already
+            setTimeout(() => setLoading(false), 500);
         }
     };
+
+    // Clear loading spinner once QR arrives or status becomes ready
+    useEffect(() => {
+        if (qrCode || whatsappStatus === 'ready') {
+            setLoading(false);
+        }
+    }, [qrCode, whatsappStatus]);
 
     const logoutSession = async () => {
         try {
             await api.delete('/sessions/destroy');
-            setWhatsappStatus('not_connected');
-            setQr(null);
+            // Status will update reactively via socket 'disconnected' event
             toast.success('Session disconnected');
         } catch (err) {
             toast.error('Failed to disconnect session');
@@ -144,10 +122,10 @@ const Connect = () => {
                         <div className="relative">
                             <div className="absolute inset-0 bg-gradient-to-r from-emerald-500 to-teal-500 blur-2xl opacity-10 rounded-[3rem]"></div>
                             <div className="bg-white p-8 rounded-[3rem] shadow-2xl border flex items-center justify-center relative w-[320px] h-[320px] sm:w-[360px] sm:h-[360px]">
-                                {qr ? (
+                                {qrCode ? (
                                     <div className="animate-fade-in w-full h-full flex flex-col items-center justify-center fade-in bg-white">
                                         <img
-                                            src={`https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(qr)}`}
+                                            src={`https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(qrCode)}`}
                                             alt="Auth QR Code"
                                             className="w-full h-full object-contain rounded-xl"
                                         />

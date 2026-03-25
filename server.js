@@ -43,9 +43,9 @@ const SessionManager = require('./src/services/SessionManager');
 const sessionManager = new SessionManager(io);
 
 // ── Start Background Services ─────────────────────────────────
-const SchedulerService = require('./src/services/SchedulerService');
-const schedulerService = new SchedulerService(sessionManager, io);
-schedulerService.start();
+// const SchedulerService = require('./src/services/SchedulerService');
+// const schedulerService = new SchedulerService(sessionManager, io);
+// schedulerService.start();
 
 const WarmupService = require('./src/services/WarmupService');
 const warmupService = new WarmupService(sessionManager);
