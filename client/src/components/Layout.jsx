@@ -16,6 +16,7 @@ const Sidebar = () => {
         { name: 'Contacts', icon: <Users size={20} />, path: '/contacts' },
         { name: 'Campaigns', icon: <Send size={20} />, path: '/campaigns' },
         { name: 'Templates', icon: <FileText size={20} />, path: '/templates' },
+        { name: 'Flow Builder', icon: <Zap size={20} />, path: '/flows' },
         { name: 'Message Bot', icon: <Bot size={20} />, path: '/message-bot' },
         { name: 'Chat', icon: <MessageSquare size={20} />, path: '/chat' },
     ];

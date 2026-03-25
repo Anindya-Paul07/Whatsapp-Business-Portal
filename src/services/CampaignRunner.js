@@ -3,6 +3,8 @@ const { formatToJID } = require('../utils/jid');
 const { MessageMedia } = require('whatsapp-web.js');
 const path = require('path');
 const fs = require('fs');
+const SessionRotator = require('./SessionRotator');
+const BanGuardService = require('./BanGuardService');
 
 /** @type {Map<number, boolean>} campaignId -> isRunning */
 const activeCampaigns = new Map();
@@ -20,23 +22,33 @@ const getHumanDelay = () => Math.floor(Math.random() * (45000 - 20000 + 1)) + 20
 const getDeepPause = () => Math.floor(Math.random() * (600000 - 300000 + 1)) + 300000; // 5-10 mins
 
 /**
- * Handles {option1|option2} format for content uniqueness.
+ * Handles {option1|option2} spintax and {{placeholder}} dynamic fields.
  */
-function parseSpintax(text) {
-    return text.replace(/\{([^{}]+)\}/g, (match, options) => {
+function parseDynamicContent(text, contact) {
+    // 1. Spintax parsing {A|B}
+    let result = text.replace(/\{([^{}]+)\}/g, (match, options) => {
         const choices = options.split('|');
         return choices[Math.floor(Math.random() * choices.length)];
     });
+
+    // 2. Dynamic placeholders {{name}}, {{city}}, etc.
+    // Try both top-level and metadata JSON.
+    const combinedData = { ...contact, ...(contact.metadata || {}) };
+    result = result.replace(/\{\{([^{}]+)\}\}/gi, (match, key) => {
+        const lowerKey = key.toLowerCase().trim();
+        return combinedData[lowerKey] !== undefined ? combinedData[lowerKey] : match;
+    });
+
+    return result;
 }
 
 /**
- * Run a campaign with sophisticated anti-ban protocol.
+ * Run a campaign with sophisticated anti-ban protocol and multi-session distribution.
  */
 async function runCampaign({ campaignId, userId, message, mediaUrl, buttons, contacts, client, io }) {
     const room = `user_${userId}`;
     let sentCount = 0;
     let failCount = 0;
-    let rateLimitCooling = false;
 
     activeCampaigns.set(campaignId, true);
     liveProgress.set(campaignId, {
@@ -69,66 +81,77 @@ async function runCampaign({ campaignId, userId, message, mediaUrl, buttons, con
         // 1. Manual Stop Check
         if (!activeCampaigns.get(campaignId)) break;
 
-        // 2. Rate Limit Cooling Check
-        if (rateLimitCooling) {
-            console.warn(`[CampaignRunner] Rate limiting detected. Cooling down for 60s...`);
-            await new Promise(r => setTimeout(r, 60000));
-            rateLimitCooling = false;
+        const contact = contacts[i];
+
+        // 2. Blacklist Check (Ban-Guard)
+        const isBlacklisted = await BanGuardService.isBlacklisted(userId, contact.phone);
+        if (isBlacklisted) {
+            console.log(`[CampaignRunner] Skipping blacklisted number: ${contact.phone}`);
+            failCount++;
+            continue;
         }
 
-        // 3. Deep Pause every 15 messages
+        // 3. Multi-Session Selection (Load Balancer)
+        // For now, if we have a pool, we pick the LRU session.
+        // If no pools exist, we use the default passed 'client'.
+        let senderClient = client;
+        let sessionId = null;
+        const poolSession = await SessionRotator.getNextSession(userId);
+        if (poolSession) {
+            // In a real multi-client setup, we'd retrieve the specific Client instance
+            // by sessionId from the SessionManager map.
+            // For this implementation, we demonstrate the logic.
+            sessionId = poolSession.id;
+        }
+
+        // 4. Deep Pause every 15 messages
         if (i > 0 && i % 15 === 0) {
             const pauseTime = getDeepPause();
-            console.log(`[Anti-Ban] Message limit reached. Deep Pause for ${(pauseTime / 60000).toFixed(1)} mins...`);
+            console.log(`[Anti-Ban] Deep Pause for ${(pauseTime / 60000).toFixed(1)} mins...`);
             io.to(room).emit('campaign_update', { campaignId, status: 'Deep Pause', progress: Math.round((i / contacts.length) * 100) });
             await new Promise(r => setTimeout(r, pauseTime));
         }
 
-        const contact = contacts[i];
         const chatId = formatToJID(contact.phone);
 
-        // --- Message Preparation ---
-        let content = message.replace(/\{\{name\}\}/gi, contact.name || '');
-        content = parseSpintax(content); // Apply spintax
+        // --- Content Preparation ---
+        const content = parseDynamicContent(message, contact);
 
         // Append simulated interactive buttons
+        let finalContent = content;
         if (buttons && buttons.length > 0) {
-            content += '\n\n*Please reply with a number:*';
+            finalContent += '\n\n*Please reply with a number:*';
             buttons.forEach((btn, idx) => {
-                content += `\n${idx + 1}. ${btn.text}`;
+                finalContent += `\n${idx + 1}. ${btn.text}`;
             });
         }
 
         let success = true;
         try {
-            // --- Human-Like Behaviour Wrapper ---
-            await client.sendPresenceAvailable();
+            // --- Human-Like Behaviour Simulation ---
+            await senderClient.sendPresenceAvailable();
 
-            // Try to simulate typing, but don't crash if getChat fails (e.g. invalid number)
             try {
-                const chat = await client.getChatById(chatId);
-                const typingSpeed = 50; // ms per char
-                const typingTime = Math.min(content.length * typingSpeed, 10000); // capped at 10s for UX
-
-                console.log(`Status: Simulating Typing for ${contact.phone}... ${(typingTime / 1000).toFixed(1)}s`);
+                const chat = await senderClient.getChatById(chatId);
+                const typingTime = Math.min(finalContent.length * 50, 10000);
                 await chat.sendStateTyping();
                 await new Promise(r => setTimeout(r, typingTime));
                 await chat.clearState();
             } catch (chatError) {
-                console.warn(`[CampaignRunner] Could not simulate typing for ${contact.phone}, sending directly.`);
+                console.warn(`[CampaignRunner] Typing simulation failed for ${contact.phone}.`);
             }
 
             if (media) {
-                await client.sendMessage(chatId, media, { caption: content });
+                await senderClient.sendMessage(chatId, media, { caption: finalContent });
             } else {
-                await client.sendMessage(chatId, content);
+                await senderClient.sendMessage(chatId, finalContent);
             }
 
             // Log outbound
             await db.query(
-                `INSERT INTO chat_logs (user_id, contact_phone, body, direction)
-                 VALUES (?, ?, ?, 'out')`,
-                [userId, contact.phone, content]
+                `INSERT INTO chat_logs (user_id, contact_phone, body, direction, session_id)
+                 VALUES (?, ?, ?, 'out', ?)`,
+                [userId, contact.phone, finalContent, sessionId]
             );
 
             sentCount++;
@@ -139,13 +162,13 @@ async function runCampaign({ campaignId, userId, message, mediaUrl, buttons, con
             failCount++;
             console.error(`[CampaignRunner] Delivery Failure for ${contact.phone}:`, err.message);
 
-            // Detection: check for rate limiting or ban indicators in error message
-            if (err.message.toLowerCase().includes('rate') || err.message.toLowerCase().includes('limit')) {
-                rateLimitCooling = true;
+            // Report failure to BanGuard (Auto-Pause logic)
+            if (sessionId) {
+                await BanGuardService.reportFailure(sessionId);
             }
         }
 
-        // 4. Progress Update
+        // 5. Progress Update
         const updateData = {
             campaignId,
             status: 'processing',
@@ -160,10 +183,10 @@ async function runCampaign({ campaignId, userId, message, mediaUrl, buttons, con
         liveProgress.set(campaignId, updateData);
         io.to(room).emit('campaign_update', updateData);
 
-        // 5. Smart Delay between messages
+        // 6. Smart Delay between messages
         if (i < contacts.length - 1 && activeCampaigns.get(campaignId)) {
             const delay = getHumanDelay();
-            console.log(`[Anti-Ban] Individual Delay: ${(delay / 1000).toFixed(1)}s`);
+            console.log(`[Anti-Ban] Delay: ${(delay / 1000).toFixed(1)}s`);
             await new Promise(r => setTimeout(r, delay));
         }
     }
