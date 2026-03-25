@@ -42,6 +42,15 @@ const io = new Server(server, {
 const SessionManager = require('./src/services/SessionManager');
 const sessionManager = new SessionManager(io);
 
+// ── Start Background Services ─────────────────────────────────
+const SchedulerService = require('./src/services/SchedulerService');
+const schedulerService = new SchedulerService(sessionManager, io);
+schedulerService.start();
+
+const WarmupService = require('./src/services/WarmupService');
+const warmupService = new WarmupService(sessionManager);
+warmupService.start();
+
 // ── Global middleware ──────────────────────────────────────────
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -118,8 +127,8 @@ async function shutdown(signal) {
     console.log(`\n[Server] ${signal} received — shutting down gracefully…`);
 
     const destroyPromises = [];
-    for (const [userId] of sessionManager.sessions) {
-        destroyPromises.push(sessionManager.destroySession(userId));
+    for (const [userId] of sessionManager.clients) {
+        destroyPromises.push(sessionManager.clients.get(userId).destroy());
     }
     await Promise.allSettled(destroyPromises);
 
