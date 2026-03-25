@@ -46,6 +46,7 @@ const sessionManager = new SessionManager(io);
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Health check ───────────────────────────────────────────────
 app.get('/health', (_req, res) =>
@@ -57,14 +58,16 @@ const authRoutes = require('./src/routes/auth');
 const sessionRoutes = require('./src/routes/sessions')(sessionManager);
 const contactRoutes = require('./src/routes/contacts');
 const campaignRoutes = require('./src/routes/campaigns')(sessionManager, io);
-const botRoutes = require('./src/routes/bots');
+const messageBotRoutes = require('./src/routes/message-bots');
+const templateRoutes = require('./src/routes/templates');
 const chatRoutes = require('./src/routes/chats')(sessionManager);
 
 app.use('/auth', authRoutes);
 app.use('/sessions', sessionRoutes);
 app.use('/contacts', contactRoutes);
 app.use('/campaigns', campaignRoutes);
-app.use('/bots', botRoutes);
+app.use('/message-bots', messageBotRoutes);
+app.use('/templates', templateRoutes);
 app.use('/chats', chatRoutes);
 
 // ── 404 handler ───────────────────────────────────────────────

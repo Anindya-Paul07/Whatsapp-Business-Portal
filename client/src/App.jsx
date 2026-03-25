@@ -9,7 +9,8 @@ import Dashboard from './pages/Dashboard';
 import Connect from './pages/Connect';
 import Contacts from './pages/Contacts';
 import Campaigns from './pages/Campaigns';
-import TemplateBot from './pages/TemplateBot';
+import MessageBot from './pages/MessageBot';
+import Templates from './pages/Templates';
 import Chat from './pages/Chat';
 
 const ProtectedRoute = ({ children }) => {
@@ -32,7 +33,8 @@ const AppRoutes = () => {
         <Route path="connect" element={<Connect />} />
         <Route path="contacts" element={<Contacts />} />
         <Route path="campaigns" element={<Campaigns />} />
-        <Route path="bots" element={<TemplateBot />} />
+        <Route path="message-bot" element={<MessageBot />} />
+        <Route path="templates" element={<Templates />} />
         <Route path="chat" element={<Chat />} />
       </Route>
 

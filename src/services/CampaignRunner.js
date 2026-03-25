@@ -1,5 +1,8 @@
 const db = require('../config/db');
 const { formatToJID } = require('../utils/jid');
+const { MessageMedia } = require('whatsapp-web.js');
+const path = require('path');
+const fs = require('fs');
 
 /** @type {Map<number, boolean>} campaignId -> isRunning */
 const activeCampaigns = new Map();
@@ -29,7 +32,7 @@ function parseSpintax(text) {
 /**
  * Run a campaign with sophisticated anti-ban protocol.
  */
-async function runCampaign({ campaignId, userId, message, contacts, client, io }) {
+async function runCampaign({ campaignId, userId, message, mediaUrl, buttons, contacts, client, io }) {
     const room = `user_${userId}`;
     let sentCount = 0;
     let failCount = 0;
@@ -46,6 +49,21 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
     });
 
     await db.query(`UPDATE campaigns SET status = 'processing' WHERE id = ?`, [campaignId]);
+
+    // Prepare media if it exists
+    let media = null;
+    if (mediaUrl) {
+        try {
+            const absolutePath = path.join(process.cwd(), mediaUrl);
+            if (fs.existsSync(absolutePath)) {
+                media = MessageMedia.fromFilePath(absolutePath);
+            } else {
+                console.error(`[CampaignRunner] Media file not found: ${absolutePath}`);
+            }
+        } catch (err) {
+            console.error(`[CampaignRunner] Media preparation error:`, err.message);
+        }
+    }
 
     for (let i = 0; i < contacts.length; i++) {
         // 1. Manual Stop Check
@@ -73,6 +91,14 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
         let content = message.replace(/\{\{name\}\}/gi, contact.name || '');
         content = parseSpintax(content); // Apply spintax
 
+        // Append simulated interactive buttons
+        if (buttons && buttons.length > 0) {
+            content += '\n\n*Please reply with a number:*';
+            buttons.forEach((btn, idx) => {
+                content += `\n${idx + 1}. ${btn.text}`;
+            });
+        }
+
         let success = true;
         try {
             // --- Human-Like Behaviour Wrapper ---
@@ -92,7 +118,11 @@ async function runCampaign({ campaignId, userId, message, contacts, client, io }
                 console.warn(`[CampaignRunner] Could not simulate typing for ${contact.phone}, sending directly.`);
             }
 
-            await client.sendMessage(chatId, content);
+            if (media) {
+                await client.sendMessage(chatId, media, { caption: content });
+            } else {
+                await client.sendMessage(chatId, content);
+            }
 
             // Log outbound
             await db.query(

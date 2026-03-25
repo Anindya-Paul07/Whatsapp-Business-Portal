@@ -45,16 +45,15 @@ class SessionManager {
                 dataPath: sessionPath,
             }),
             puppeteer: {
-                headless: true,
+                headless: 'shell', // More stable for automation
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-accelerated-2d-canvas',
                     '--no-first-run',
-                    '--no-zygote',
-                    '--single-process',
                     '--disable-gpu',
+                    '--disable-extensions',
                 ],
             },
         });
@@ -171,10 +170,10 @@ class SessionManager {
             timestamp: new Date().toISOString(),
         });
 
-        // 3 – Check template_bots for auto-reply
+        // 3 – Check message_bots for auto-reply
         try {
             const [bots] = await db.query(
-                `SELECT * FROM template_bots
+                `SELECT * FROM message_bots
           WHERE user_id = ? AND is_active = 1`,
                 [userId]
             );

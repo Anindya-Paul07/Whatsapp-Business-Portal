@@ -2,6 +2,12 @@ const express = require('express');
 const db = require('../config/db');
 const { authMiddleware } = require('../middleware/auth');
 const { runCampaign, stopCampaign, getLiveProgress } = require('../services/CampaignRunner');
+const multer = require('multer');
+const csv = require('csv-parser');
+const fs = require('fs');
+const path = require('path');
+
+const upload = multer({ dest: 'uploads/' });
 
 /**
  * Factory so routes have access to SessionManager and io.
@@ -37,17 +43,17 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
     });
 
     // ── POST /campaigns ─────────────────────────────────────────
-    router.post('/', authMiddleware, async (req, res) => {
-        const { name, message } = req.body;
-        if (!name || !message) {
-            return res.status(400).json({ success: false, message: 'name and message are required' });
+    router.post('/', authMiddleware, upload.none(), async (req, res) => {
+        const { name, template_id } = req.body;
+        if (!name || !template_id) {
+            return res.status(400).json({ success: false, message: 'name and template_id are required' });
         }
 
         try {
             const [result] = await db.query(
-                `INSERT INTO campaigns (user_id, name, message, status)
-         VALUES (?, ?, ?, 'pending')`,
-                [req.user.id, name, message]
+                `INSERT INTO campaigns (user_id, name, template_id, status)
+                 VALUES (?, ?, ?, 'pending')`,
+                [req.user.id, name, template_id]
             );
             return res.status(201).json({ success: true, campaignId: result.insertId });
         } catch (err) {
@@ -57,16 +63,18 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
     });
 
     // ── POST /campaigns/:id/run ─────────────────────────────────
-    router.post('/:id/run', authMiddleware, async (req, res) => {
+    router.post('/:id/run', authMiddleware, upload.single('file'), async (req, res) => {
         const userId = req.user.id;
         const campaignId = parseInt(req.params.id, 10);
 
         const [[campaign]] = await db.query(
-            `SELECT * FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1`,
+            `SELECT c.*, t.message, t.media_url, t.buttons FROM campaigns c 
+             JOIN message_templates t ON c.template_id = t.id 
+             WHERE c.id = ? AND c.user_id = ? LIMIT 1`,
             [campaignId, userId]
         );
         if (!campaign) {
-            return res.status(404).json({ success: false, message: 'Campaign not found' });
+            return res.status(404).json({ success: false, message: 'Campaign or Template not found' });
         }
         if (campaign.status === 'processing') {
             return res.status(409).json({ success: false, message: 'Campaign is already running' });
@@ -79,28 +87,55 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
             });
         }
 
-        let contacts;
+        let contacts = [];
         if (req.body.fromSource === 'database') {
-            [contacts] = await db.query(
+            const [rows] = await db.query(
                 `SELECT name, phone FROM contacts WHERE user_id = ?`,
                 [userId]
             );
-        } else {
-            // In a real scenario, this would read from a temp CSV or the body
-            // For now, default to database for the runner logic
-            [contacts] = await db.query(`SELECT name, phone FROM contacts WHERE user_id = ?`, [userId]);
+            contacts = rows;
+        } else if (req.body.fromSource === 'csv' && req.file) {
+            // Parse CSV file
+            try {
+                contacts = await new Promise((resolve, reject) => {
+                    const results = [];
+                    fs.createReadStream(req.file.path)
+                        .pipe(csv())
+                        .on('data', (data) => {
+                            // Support various header names
+                            const name = data.name || data.Name || data.contact_name || '';
+                            const phone = data.phone || data.Phone || data.number || data.whatsapp_number;
+                            if (phone) {
+                                results.push({ name, phone: phone.toString().replace(/\D/g, '') });
+                            }
+                        })
+                        .on('end', () => {
+                            fs.unlinkSync(req.file.path); // Clean up temp file
+                            resolve(results);
+                        })
+                        .on('error', reject);
+                });
+            } catch (err) {
+                console.error('[Campaigns] CSV parse error:', err.message);
+                return res.status(400).json({ success: false, message: 'Failed to parse CSV file' });
+            }
         }
 
         if (contacts.length === 0) {
-            return res.status(400).json({ success: false, message: 'No contacts selected' });
+            return res.status(400).json({ success: false, message: 'No contacts selected or invalid CSV' });
         }
 
         const client = sessionManager.getOrCreateSession(userId);
+
+        let parsedButtons = [];
+        try { if (campaign.buttons) parsedButtons = typeof campaign.buttons === 'string' ? JSON.parse(campaign.buttons) : campaign.buttons; } catch (e) { }
 
         runCampaign({
             campaignId,
             userId,
             message: campaign.message,
+            mediaUrl: campaign.media_url,
+            buttons: parsedButtons,
             contacts,
             client,
             io,
@@ -108,7 +143,7 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
 
         return res.json({
             success: true,
-            message: `Campaign started. Monitor progress via 'campaign_update'.`,
+            message: `Campaign started with ${contacts.length} contacts.`,
         });
     });
 
@@ -134,16 +169,15 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
         }
     });
 
-    // ── PUT /campaigns/:id ───────────────────────────────────
     router.put('/:id', authMiddleware, async (req, res) => {
-        const { name, message } = req.body;
+        const { name, template_id } = req.body;
         const campaignId = req.params.id;
 
         try {
             const [result] = await db.query(
-                `UPDATE campaigns SET name = ?, message = ?
-           WHERE id = ? AND user_id = ?`,
-                [name, message, campaignId, req.user.id]
+                `UPDATE campaigns SET name = ?, template_id = ?
+                 WHERE id = ? AND user_id = ?`,
+                [name, template_id, campaignId, req.user.id]
             );
 
             if (result.affectedRows === 0) {
