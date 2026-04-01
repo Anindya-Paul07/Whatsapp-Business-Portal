@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../config/db');
 const { authMiddleware } = require('../middleware/auth');
 const { formatToJID } = require('../utils/jid');
+const { parseDynamicContent } = require('../services/CampaignRunner');
 
 /**
  * Factory — needs sessionManager to send manual replies.
@@ -77,13 +78,23 @@ module.exports = function createChatRoutes(sessionManager) {
             const client = sessionManager.getOrCreateSession(userId);
             const chatId = formatToJID(phone);
 
-            await client.sendMessage(chatId, message);
+            // Look up contact name for dynamic parsing
+            let contact = { phone };
+            const [contacts] = await db.query(`SELECT * FROM contacts WHERE user_id = ? AND phone = ? LIMIT 1`, [userId, phone]);
+            if (contacts.length > 0) {
+                contact = contacts[0];
+                try { if (typeof contact.metadata === 'string') contact.metadata = JSON.parse(contact.metadata); } catch (e) { }
+            }
+
+            const finalMessage = parseDynamicContent(message, contact);
+
+            await client.sendMessage(chatId, finalMessage);
 
             // Persist outbound log
             await db.query(
                 `INSERT INTO chat_logs (user_id, contact_phone, body, direction)
-         VALUES (?, ?, ?, 'out')`,
-                [userId, phone, message]
+                 VALUES (?, ?, ?, 'out')`,
+                [userId, phone, finalMessage]
             );
 
             return res.json({ success: true, message: 'Message sent' });

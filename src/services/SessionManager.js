@@ -28,10 +28,9 @@ class SessionManager {
                 clientId: `session_${key}`,
                 dataPath: sessionPath,
             }),
-            // Pin a stable WhatsApp Web version to avoid injection timing issues
+            // Disable remote version cache to prevent ETIMEDOUT network errors
             webVersionCache: {
-                type: 'remote',
-                remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+                type: 'none',
             },
             puppeteer: {
                 headless: true,
@@ -126,8 +125,21 @@ class SessionManager {
 
         client.on('ready', () => {
             console.log(`[SessionManager] Client ready for user ${userId}`);
-            db.query("UPDATE whatsapp_sessions SET status = 'active' WHERE id = ?", [sessionId])
-                .catch(err => console.error('[SessionManager] DB update error:', err.message));
+
+            const statusUpdate = 'active';
+            if (sessionId === 'default') {
+                db.query("UPDATE whatsapp_sessions SET status = ? WHERE user_id = ?", [statusUpdate, userId])
+                    .then(([result]) => {
+                        if (result.affectedRows === 0) {
+                            return db.query("INSERT INTO whatsapp_sessions (user_id, status) VALUES (?, ?)", [userId, statusUpdate]);
+                        }
+                    })
+                    .catch(err => console.error('[SessionManager] DB update/insert error:', err.message));
+            } else {
+                db.query("UPDATE whatsapp_sessions SET status = ? WHERE id = ?", [statusUpdate, sessionId])
+                    .catch(err => console.error('[SessionManager] DB update error:', err.message));
+            }
+
             this.io.to(room).emit('session_status', { status: 'ready', sessionId, message: 'WhatsApp Connected!' });
         });
 
@@ -138,8 +150,15 @@ class SessionManager {
 
         client.on('disconnected', (reason) => {
             console.log(`[SessionManager] Client disconnected for user ${userId}:`, reason);
-            db.query("UPDATE whatsapp_sessions SET status = 'inactive' WHERE id = ?", [sessionId])
-                .catch(() => { });
+
+            if (sessionId === 'default') {
+                db.query("UPDATE whatsapp_sessions SET status = 'disconnected' WHERE user_id = ?", [userId])
+                    .catch(() => { });
+            } else {
+                db.query("UPDATE whatsapp_sessions SET status = 'disconnected' WHERE id = ?", [sessionId])
+                    .catch(() => { });
+            }
+
             this.clients.delete(userId);
             this.io.to(room).emit('session_status', { status: 'disconnected', sessionId, message: 'WhatsApp Disconnected.' });
         });

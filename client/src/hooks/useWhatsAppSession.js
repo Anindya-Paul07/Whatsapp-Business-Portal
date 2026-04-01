@@ -24,7 +24,7 @@ export const useWhatsAppSession = (user) => {
         const token = localStorage.getItem('token');
 
         // Create socket once, save to ref AND state so React consumers re-render
-        const sock = io('/', {
+        const sock = io('http://localhost:5000', {
             auth: { token },
             transports: ['websocket', 'polling']
         });

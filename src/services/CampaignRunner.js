@@ -1,6 +1,6 @@
 const db = require('../config/db');
 const { formatToJID } = require('../utils/jid');
-const { MessageMedia } = require('whatsapp-web.js');
+const { MessageMedia, Buttons } = require('whatsapp-web.js');
 const path = require('path');
 const fs = require('fs');
 const SessionRotator = require('./SessionRotator');
@@ -22,19 +22,24 @@ const getHumanDelay = () => Math.floor(Math.random() * (45000 - 20000 + 1)) + 20
 const getDeepPause = () => Math.floor(Math.random() * (600000 - 300000 + 1)) + 300000; // 5-10 mins
 
 /**
- * Handles {option1|option2} spintax and {{placeholder}} dynamic fields.
+ * Handles {option1|option2} spintax and {{placeholder}} or {placeholder} dynamic fields.
  */
 function parseDynamicContent(text, contact) {
-    // 1. Spintax parsing {A|B}
+    if (!text) return '';
+
+    // 1. Spintax parsing {A|B} only if there is a pipe character
     let result = text.replace(/\{([^{}]+)\}/g, (match, options) => {
-        const choices = options.split('|');
-        return choices[Math.floor(Math.random() * choices.length)];
+        if (options.includes('|')) {
+            const choices = options.split('|');
+            return choices[Math.floor(Math.random() * choices.length)];
+        }
+        return match; // Leave {name} intact for step 2
     });
 
-    // 2. Dynamic placeholders {{name}}, {{city}}, etc.
+    // 2. Dynamic placeholders {{name}}, {{city}}, or {name}, etc.
     // Try both top-level and metadata JSON.
     const combinedData = { ...contact, ...(contact.metadata || {}) };
-    result = result.replace(/\{\{([^{}]+)\}\}/gi, (match, key) => {
+    result = result.replace(/\{\{?([^{}]+)\}?\}/gi, (match, key) => {
         const lowerKey = key.toLowerCase().trim();
         return combinedData[lowerKey] !== undefined ? combinedData[lowerKey] : match;
     });
@@ -117,12 +122,13 @@ async function runCampaign({ campaignId, userId, message, mediaUrl, buttons, con
         // --- Content Preparation ---
         const content = parseDynamicContent(message, contact);
 
-        // Append simulated interactive buttons
-        let finalContent = content;
+        // Append simulated interactive buttons because whatsapp-web.js Native Buttons are deprecated by Meta
+        let finalMessageStr = content;
         if (buttons && buttons.length > 0) {
-            finalContent += '\n\n*Please reply with a number:*';
+            finalMessageStr += '\n\n*Please reply with a number:*';
             buttons.forEach((btn, idx) => {
-                finalContent += `\n${idx + 1}. ${btn.text}`;
+                const btnText = btn.text || btn.body || btn;
+                finalMessageStr += `\n${idx + 1}. ${btnText}`;
             });
         }
 
@@ -133,25 +139,25 @@ async function runCampaign({ campaignId, userId, message, mediaUrl, buttons, con
 
             try {
                 const chat = await senderClient.getChatById(chatId);
-                const typingTime = Math.min(finalContent.length * 50, 10000);
+                const typingTime = Math.min(finalMessageStr.length * 50, 10000);
                 await chat.sendStateTyping();
                 await new Promise(r => setTimeout(r, typingTime));
                 await chat.clearState();
             } catch (chatError) {
-                console.warn(`[CampaignRunner] Typing simulation failed for ${contact.phone}.`);
+                // Ignore silently since typing simulation is not strictly necessary and frequently fails for new chats
             }
 
             if (media) {
-                await senderClient.sendMessage(chatId, media, { caption: finalContent });
+                await senderClient.sendMessage(chatId, media, { caption: finalMessageStr });
             } else {
-                await senderClient.sendMessage(chatId, finalContent);
+                await senderClient.sendMessage(chatId, finalMessageStr);
             }
 
             // Log outbound
             await db.query(
                 `INSERT INTO chat_logs (user_id, contact_phone, body, direction, session_id)
                  VALUES (?, ?, ?, 'out', ?)`,
-                [userId, contact.phone, finalContent, sessionId]
+                [userId, contact.phone, content, sessionId]
             );
 
             sentCount++;
@@ -220,4 +226,4 @@ function stopCampaign(campaignId) {
     return false;
 }
 
-module.exports = { runCampaign, stopCampaign, getLiveProgress };
+module.exports = { runCampaign, stopCampaign, getLiveProgress, parseDynamicContent };

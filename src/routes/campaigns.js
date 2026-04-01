@@ -51,8 +51,8 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
 
         try {
             const [result] = await db.query(
-                `INSERT INTO campaigns (user_id, name, template_id, status)
-                 VALUES (?, ?, ?, 'pending')`,
+                `INSERT INTO campaigns (user_id, name, template_id, message, status)
+                 VALUES (?, ?, ?, '', 'pending')`,
                 [req.user.id, name, template_id]
             );
             return res.status(201).json({ success: true, campaignId: result.insertId });
