@@ -4,8 +4,10 @@ import {
 } from 'lucide-react';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
+import { useAppDialog } from './AppDialog';
 
 const CampaignProgressBar = ({ campaign, socket, onFinished }) => {
+    const { confirm, Dialog } = useAppDialog();
     const [data, setData] = useState(campaign);
     const [logs, setLogs] = useState([]);
     const [stopping, setStopping] = useState(false);
@@ -44,7 +46,13 @@ const CampaignProgressBar = ({ campaign, socket, onFinished }) => {
     }, [socket, campaign.id, onFinished]);
 
     const handleStop = async () => {
-        if (!window.confirm('Are you sure you want to stop this campaign immediately?')) return;
+        const ok = await confirm({
+            title: 'Stop campaign?',
+            message: 'The current message will finish if it is already sending, then remaining recipients will not be sent.',
+            confirmLabel: 'Stop campaign',
+            danger: true
+        });
+        if (!ok) return;
         setStopping(true);
         try {
             await api.post(`/campaigns/${campaign.id}/stop`);
@@ -58,6 +66,7 @@ const CampaignProgressBar = ({ campaign, socket, onFinished }) => {
     const progress = data.progress || 0;
 
     return (
+        <>
         <div className="bg-white rounded-[2rem] p-6 lg:p-8 border border-emerald-100 shadow-xl shadow-emerald-500/10 animate-fade-in relative overflow-hidden group">
             <div className="absolute inset-0 bg-gradient-to-br from-emerald-50/50 to-teal-50/50 -z-10 opacity-70"></div>
             <div className="absolute -top-24 -right-24 w-48 h-48 bg-emerald-300 rounded-full blur-[80px] -z-10 opacity-30 group-hover:opacity-50 transition-opacity duration-700"></div>
@@ -84,7 +93,7 @@ const CampaignProgressBar = ({ campaign, socket, onFinished }) => {
                     className="flex items-center gap-2 px-5 py-3 bg-white border-2 border-red-100 text-red-600 rounded-xl text-sm font-black hover:bg-red-50 hover:border-red-200 transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed group/btn"
                 >
                     <XCircle size={18} className="group-hover/btn:scale-110 transition-transform" />
-                    <span>{stopping ? 'Halting...' : 'Abort Engine'}</span>
+                    <span>{stopping ? 'Stopping...' : 'Stop Campaign'}</span>
                 </button>
             </div>
 
@@ -105,7 +114,7 @@ const CampaignProgressBar = ({ campaign, socket, onFinished }) => {
                 </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-6 mb-8">
+            <div className="grid grid-cols-3 gap-4 mb-8">
                 <div className="bg-white/60 backdrop-blur-md p-6 rounded-[1.5rem] border border-emerald-100 shadow-sm relative overflow-hidden group/success hover:-translate-y-1 transition-all duration-300">
                     <div className="absolute inset-x-0 bottom-0 h-1 bg-emerald-500 scale-x-0 group-hover/success:scale-x-100 origin-left transition-transform duration-500"></div>
                     <div className="flex items-center gap-3 text-emerald-600 mb-2">
@@ -122,6 +131,14 @@ const CampaignProgressBar = ({ campaign, socket, onFinished }) => {
                         <span className="text-xs font-black uppercase tracking-widest text-red-700">Failed</span>
                     </div>
                     <p className="text-5xl font-black text-gray-900 tracking-tighter mt-2">{data.failCount || 0}</p>
+                </div>
+
+                <div className="bg-white/60 backdrop-blur-md p-6 rounded-[1.5rem] border border-amber-100 shadow-sm relative overflow-hidden">
+                    <div className="flex items-center gap-3 text-amber-500 mb-2">
+                        <div className="p-2 bg-amber-100 rounded-xl"><AlertCircle size={20} /></div>
+                        <span className="text-xs font-black uppercase tracking-widest text-amber-700">Skipped</span>
+                    </div>
+                    <p className="text-5xl font-black text-gray-900 tracking-tighter mt-2">{data.skippedCount || 0}</p>
                 </div>
             </div>
 
@@ -160,6 +177,8 @@ const CampaignProgressBar = ({ campaign, socket, onFinished }) => {
                 </div>
             </div>
         </div>
+            <Dialog />
+        </>
     );
 };
 

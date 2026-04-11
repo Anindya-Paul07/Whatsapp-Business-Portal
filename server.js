@@ -43,9 +43,9 @@ const SessionManager = require('./src/services/SessionManager');
 const sessionManager = new SessionManager(io);
 
 // ── Start Background Services ─────────────────────────────────
-// const SchedulerService = require('./src/services/SchedulerService');
-// const schedulerService = new SchedulerService(sessionManager, io);
-// schedulerService.start();
+const SchedulerService = require('./src/services/SchedulerService');
+const schedulerService = new SchedulerService(sessionManager, io);
+schedulerService.start();
 
 const WarmupService = require('./src/services/WarmupService');
 const warmupService = new WarmupService(sessionManager);
@@ -101,7 +101,7 @@ io.use((socket, next) => {
     if (!token) return next(new Error('Authentication required'));
 
     try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your_super_secret_jwt_key_change_this');
         socket.userId = decoded.id;
         next();
     } catch (err) {

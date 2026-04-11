@@ -1,21 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import {
     Bot, Search, Plus, Trash2, MessageCircle,
-    Code, Tag, Loader2, ToggleLeft, ToggleRight, X, AlertCircle, Zap
+    Code, Tag, Loader2, ToggleLeft, ToggleRight, X, Zap, Edit3, FlaskConical
 } from 'lucide-react';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
+import { useAppDialog } from '../components/AppDialog';
 
 const MessageBot = () => {
+    const { confirm, prompt, Dialog } = useAppDialog();
     const [bots, setBots] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
+    const [editingBot, setEditingBot] = useState(null);
 
     // Form State
-    const [name, setName] = useState(''); // Visual only
     const [keyword, setKeyword] = useState('');
     const [replyText, setReplyText] = useState('');
     const [replyType, setReplyType] = useState('contains'); // 'exact' | 'contains'
+    const [priority, setPriority] = useState(100);
     const [submitting, setSubmitting] = useState(false);
 
     const fetchBots = async () => {
@@ -34,18 +37,44 @@ const MessageBot = () => {
         fetchBots();
     }, []);
 
+    const resetForm = () => {
+        setEditingBot(null);
+        setKeyword('');
+        setReplyText('');
+        setReplyType('contains');
+        setPriority(100);
+    };
+
+    const openCreate = () => {
+        resetForm();
+        setShowModal(true);
+    };
+
+    const openEdit = (bot) => {
+        setEditingBot(bot);
+        setKeyword(bot.keyword || '');
+        setReplyText(bot.reply_text || '');
+        setReplyType(bot.reply_type || 'contains');
+        setPriority(bot.priority || 100);
+        setShowModal(true);
+    };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setSubmitting(true);
         try {
-            await api.post('/message-bots', {
+            const payload = {
                 keyword,
                 reply_text: replyText,
-                reply_type: replyType
-            });
-            toast.success('Auto-reply bot activated');
+                reply_type: replyType,
+                priority,
+                is_active: editingBot ? !!editingBot.is_active : true
+            };
+            if (editingBot) await api.put(`/message-bots/${editingBot.id}`, payload);
+            else await api.post('/message-bots', payload);
+            toast.success(editingBot ? 'Auto reply updated' : 'Auto reply activated');
             setShowModal(false);
-            setKeyword(''); setReplyText('');
+            resetForm();
             fetchBots();
         } catch (err) {
             toast.error('Failed to activate bot');
@@ -67,8 +96,33 @@ const MessageBot = () => {
         }
     };
 
+    const testKeyword = async () => {
+        const value = await prompt({
+            title: 'Test auto replies',
+            message: 'Type an incoming customer message and the portal will show the first matching active rule.',
+            placeholder: 'price please',
+            confirmLabel: 'Test'
+        });
+        if (!value) return;
+        const normalized = value.toLowerCase().trim();
+        const match = [...bots]
+            .filter(bot => bot.is_active)
+            .sort((a, b) => (a.priority || 100) - (b.priority || 100))
+            .find(bot => {
+                const keyword = String(bot.keyword || '').toLowerCase().trim();
+                return bot.reply_type === 'exact' ? normalized === keyword : normalized.includes(keyword);
+            });
+        toast(match ? `Matched "${match.keyword}"` : 'No active rule matched this message');
+    };
+
     const deleteBot = async (id) => {
-        if (!window.confirm('Delete this message bot?')) return;
+        const ok = await confirm({
+            title: 'Delete auto reply?',
+            message: 'This keyword reply will stop responding to incoming messages.',
+            confirmLabel: 'Delete',
+            danger: true
+        });
+        if (!ok) return;
         try {
             await api.delete(`/message-bots/${id}`);
             setBots(bots.filter(b => b.id !== id));
@@ -83,14 +137,34 @@ const MessageBot = () => {
             {/* Header */}
             <div className="flex flex-col xl:flex-row gap-6 items-start xl:items-center justify-between">
                 <div>
-                    <h2 className="text-4xl font-black text-gray-900 tracking-tight">Auto <span className="text-emerald-500">Bots</span></h2>
-                    <p className="text-gray-500 font-medium text-lg mt-1">Configure keyword logic and 24/7 intelligent responses</p>
+                    <p className="text-xs font-black uppercase tracking-widest text-emerald-600 mb-2">Library</p>
+                    <h2 className="text-4xl font-black text-gray-900 tracking-tight">Auto Replies</h2>
+                    <p className="text-gray-500 font-medium text-lg mt-1">Send automatic replies when incoming messages match a keyword.</p>
                 </div>
 
-                <button onClick={() => setShowModal(true)} className="px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black rounded-2xl hover:from-emerald-600 hover:to-teal-600 shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-2 transform hover:-translate-y-1">
-                    <Plus size={20} />
-                    <span>Create Auto-Responder</span>
-                </button>
+                <div className="flex flex-wrap gap-3">
+                    <button onClick={testKeyword} className="px-5 py-3.5 bg-white border border-gray-200 text-gray-700 font-black rounded-2xl hover:border-emerald-300 transition-all flex items-center gap-2">
+                        <FlaskConical size={18} /> Test keyword
+                    </button>
+                    <button onClick={openCreate} className="px-6 py-3.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black rounded-2xl hover:from-emerald-600 hover:to-teal-600 shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-2 transform hover:-translate-y-1">
+                        <Plus size={20} />
+                        <span>Create Auto-Responder</span>
+                    </button>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                {[
+                    ['Greeting', 'Welcome new customers without sounding technical.'],
+                    ['Away message', 'Reply when the team is offline or busy.'],
+                    ['Keyword reply', 'Answer price, location, support, or payment questions.'],
+                    ['Opt-out', 'STOP and similar words are protected automatically.']
+                ].map(([title, detail]) => (
+                    <div key={title} className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+                        <p className="font-black text-gray-900">{title}</p>
+                        <p className="text-sm font-medium text-gray-500 mt-1">{detail}</p>
+                    </div>
+                ))}
             </div>
 
             {/* Grid */}
@@ -106,7 +180,7 @@ const MessageBot = () => {
                         </div>
                         <h3 className="text-2xl font-black text-gray-900 mb-2">No active message bots</h3>
                         <p className="text-gray-500 font-medium max-w-md mx-auto mb-8">Deploy your first automated responder to capture leads and answer inquiries while you sleep.</p>
-                        <button onClick={() => setShowModal(true)} className="px-8 py-4 bg-gray-900 text-white font-black rounded-2xl shadow-xl shadow-gray-900/20 hover:bg-gray-800 transition-colors inline-flex items-center gap-2">
+                        <button onClick={openCreate} className="px-8 py-4 bg-gray-900 text-white font-black rounded-2xl shadow-xl shadow-gray-900/20 hover:bg-gray-800 transition-colors inline-flex items-center gap-2">
                             <Plus size={20} /> Initialize Autopilot
                         </button>
                     </div>
@@ -122,13 +196,17 @@ const MessageBot = () => {
                                 <div className="flex items-center gap-2">
                                     <button
                                         onClick={() => toggleBot(bot)}
+                                        disabled={bot.is_system}
                                         className={`transition-all hover:scale-105 ${bot.is_active ? 'text-emerald-500' : 'text-gray-300 hover:text-gray-400'}`}
                                     >
                                         {bot.is_active ? <ToggleRight size={40} /> : <ToggleLeft size={40} />}
                                     </button>
-                                    <button onClick={() => deleteBot(bot.id)} className="w-10 h-10 rounded-xl bg-white border border-gray-100 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 hover:border-red-200 transition-all opacity-0 group-hover:opacity-100 shadow-sm flex-shrink-0">
-                                        <Trash2 size={16} />
+                                    <button onClick={() => openEdit(bot)} className="w-10 h-10 rounded-xl bg-white border border-gray-100 flex items-center justify-center text-gray-400 hover:text-blue-600 hover:bg-blue-50 hover:border-blue-200 transition-all opacity-0 group-hover:opacity-100 shadow-sm flex-shrink-0">
+                                        <Edit3 size={16} />
                                     </button>
+                                    {!bot.is_system && <button onClick={() => deleteBot(bot.id)} className="w-10 h-10 rounded-xl bg-white border border-gray-100 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 hover:border-red-200 transition-all opacity-0 group-hover:opacity-100 shadow-sm flex-shrink-0">
+                                        <Trash2 size={16} />
+                                    </button>}
                                 </div>
                             </div>
 
@@ -140,6 +218,14 @@ const MessageBot = () => {
                                     <span className="flex h-2 w-2 relative">
                                         <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                                         <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                                    </span>
+                                )}
+                                <span className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest bg-gray-50 text-gray-500 border border-gray-100">
+                                    Priority {bot.priority || 100}
+                                </span>
+                                {bot.is_system && (
+                                    <span className="px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest bg-red-50 text-red-600 border border-red-100">
+                                        Protected opt-out
                                     </span>
                                 )}
                             </div>
@@ -160,7 +246,7 @@ const MessageBot = () => {
                             <div className="flex items-center gap-2 text-[11px] font-black tracking-widest uppercase text-gray-400">
                                 <MessageCircle size={14} /> Pipeline
                             </div>
-                            <span className="px-3 py-1 bg-white border border-gray-200 rounded-lg text-[10px] font-bold text-gray-500 uppercase">SYS_BOT_{bot.id}</span>
+                            <span className="px-3 py-1 bg-white border border-gray-200 rounded-lg text-[10px] font-bold text-gray-500 uppercase">Rule {bot.id}</span>
                         </div>
                     </div>
                 ))}
@@ -182,8 +268,8 @@ const MessageBot = () => {
                                     <Bot size={32} className="text-emerald-100" />
                                 </div>
                                 <div>
-                                    <h3 className="text-3xl font-black tracking-tight drop-shadow-sm">Deploy Auto-Bot</h3>
-                                    <p className="text-emerald-100 font-medium mt-1">Setup listening logic and exact response</p>
+                                    <h3 className="text-3xl font-black tracking-tight drop-shadow-sm">{editingBot ? 'Edit auto reply' : 'Create auto reply'}</h3>
+                                    <p className="text-emerald-100 font-medium mt-1">Choose what customers type and what reply they receive.</p>
                                 </div>
                             </div>
                         </div>
@@ -194,9 +280,14 @@ const MessageBot = () => {
                                     <Search size={20} />
                                 </div>
                                 <div>
-                                    <p className="text-sm font-black text-emerald-900">Listener Configuration</p>
-                                    <p className="text-xs text-emerald-700 font-medium">This determines exactly what incoming message triggers the bot.</p>
+                                    <p className="text-sm font-black text-emerald-900">Rule setup</p>
+                                    <p className="text-xs text-emerald-700 font-medium">Contains means the customer message includes the keyword. Exact means the whole message must match.</p>
                                 </div>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-black text-gray-700 uppercase tracking-wider mb-2">Priority</label>
+                                <input type="number" min="1" value={priority} onChange={e => setPriority(e.target.value)} className="w-full bg-gray-50 border border-gray-200 text-gray-900 rounded-2xl px-5 py-4 focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 focus:bg-white transition-all font-bold" />
+                                <p className="text-xs text-gray-500 font-medium mt-2">Lower priority runs first when multiple rules match.</p>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -241,13 +332,14 @@ const MessageBot = () => {
                                     Cancel
                                 </button>
                                 <button type="submit" disabled={submitting} className="flex-[2] px-6 py-4 bg-gray-900 text-white font-black rounded-2xl hover:bg-gray-800 shadow-xl shadow-gray-900/20 transition-all transform hover:-translate-y-1 disabled:opacity-50 flex items-center justify-center gap-3">
-                                    {submitting ? <><Loader2 className="animate-spin" size={24} /> Linking System...</> : <><Bot size={24} /> Initialize Auto-Responder</>}
+                                    {submitting ? <><Loader2 className="animate-spin" size={24} /> Saving...</> : <><Bot size={24} /> {editingBot ? 'Update auto reply' : 'Create auto reply'}</>}
                                 </button>
                             </div>
                         </form>
                     </div>
                 </div>
             )}
+            <Dialog />
         </div>
     );
 };

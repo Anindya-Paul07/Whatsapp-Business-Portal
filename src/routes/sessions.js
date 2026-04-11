@@ -1,5 +1,6 @@
 const express = require('express');
 const { authMiddleware } = require('../middleware/auth');
+const QRCode = require('qrcode');
 
 /**
  * Factory function so routes have access to the SessionManager.
@@ -46,6 +47,24 @@ module.exports = function createSessionRoutes(sessionManager) {
             success: true,
             status: ready ? 'ready' : 'not_connected',
         });
+    });
+
+    router.post('/qr-image', authMiddleware, async (req, res) => {
+        const { qr } = req.body;
+        if (!qr) {
+            return res.status(400).json({ success: false, message: 'QR data is required' });
+        }
+
+        try {
+            const dataUrl = await QRCode.toDataURL(qr, {
+                width: 320,
+                margin: 2,
+                color: { dark: '#111b21', light: '#ffffff' }
+            });
+            return res.json({ success: true, dataUrl });
+        } catch (err) {
+            return res.status(500).json({ success: false, message: 'Failed to render QR code' });
+        }
     });
 
     // ──────────────────────────────────────────────────────────────

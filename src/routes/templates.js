@@ -19,7 +19,35 @@ const storage = multer.diskStorage({
         cb(null, 'template-' + uniqueSuffix + path.extname(file.originalname));
     }
 });
-const upload = multer({ storage });
+const upload = multer({
+    storage,
+    limits: { fileSize: 16 * 1024 * 1024 }
+});
+
+function parseButtons(buttons) {
+    if (!buttons) return [];
+    let parsed = buttons;
+    if (typeof buttons === 'string') {
+        try {
+            parsed = JSON.parse(buttons);
+        } catch (_) {
+            parsed = [];
+        }
+    }
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+        .map(btn => ({ text: String(btn.text || btn.body || '').trim() }))
+        .filter(btn => btn.text)
+        .slice(0, 3);
+}
+
+function validateTemplate({ name, message, buttons }) {
+    if (!name || !String(name).trim()) return 'Template name is required';
+    if (!message || !String(message).trim()) return 'Message is required';
+    if (buttons.length > 3) return 'Use 3 buttons or fewer';
+    if (buttons.some(btn => !btn.text)) return 'Button text is required';
+    return null;
+}
 
 // ── GET /templates ────────────────────────────────────────────
 router.get('/', authMiddleware, async (req, res) => {
@@ -38,17 +66,16 @@ router.get('/', authMiddleware, async (req, res) => {
 // ── POST /templates ───────────────────────────────────────────
 router.post('/', authMiddleware, upload.single('media'), async (req, res) => {
     const { name, message, category, buttons } = req.body;
-    if (!name || !message) {
-        return res.status(400).json({ success: false, message: 'Name and message are required' });
-    }
 
     const mediaUrl = req.file ? `uploads/templates/${req.file.filename}` : null;
-    let parsedButtons = null;
     try {
-        if (buttons) parsedButtons = JSON.parse(buttons);
-    } catch (e) { }
+        const parsedButtons = parseButtons(buttons);
+        const validation = validateTemplate({ name, message, buttons: parsedButtons });
+        if (validation) {
+            if (req.file) fs.unlink(req.file.path, () => { });
+            return res.status(400).json({ success: false, message: validation });
+        }
 
-    try {
         const [result] = await db.query(
             'INSERT INTO message_templates (user_id, name, message, category, media_url, buttons) VALUES (?, ?, ?, ?, ?, ?)',
             [req.user.id, name, message, category || 'marketing', mediaUrl, JSON.stringify(parsedButtons)]
@@ -56,7 +83,68 @@ router.post('/', authMiddleware, upload.single('media'), async (req, res) => {
         res.status(201).json({ success: true, templateId: result.insertId });
     } catch (err) {
         console.error('[Templates] Create error:', err.message);
+        if (req.file) fs.unlink(req.file.path, () => { });
         res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// ── PUT /templates/:id ─────────────────────────────────────────
+router.put('/:id', authMiddleware, upload.single('media'), async (req, res) => {
+    const { name, message, category, buttons, remove_media } = req.body;
+
+    try {
+        const [[existing]] = await db.query(
+            'SELECT * FROM message_templates WHERE id = ? AND user_id = ? LIMIT 1',
+            [req.params.id, req.user.id]
+        );
+        if (!existing) {
+            if (req.file) fs.unlink(req.file.path, () => { });
+            return res.status(404).json({ success: false, message: 'Template not found' });
+        }
+
+        const parsedButtons = parseButtons(buttons);
+        const validation = validateTemplate({ name, message, buttons: parsedButtons });
+        if (validation) {
+            if (req.file) fs.unlink(req.file.path, () => { });
+            return res.status(400).json({ success: false, message: validation });
+        }
+
+        const nextMediaUrl = req.file
+            ? `uploads/templates/${req.file.filename}`
+            : (remove_media === 'true' ? null : existing.media_url);
+
+        await db.query(
+            `UPDATE message_templates
+                SET name = ?, message = ?, category = ?, media_url = ?, buttons = ?
+              WHERE id = ? AND user_id = ?`,
+            [name, message, category || existing.category || 'marketing', nextMediaUrl, JSON.stringify(parsedButtons), req.params.id, req.user.id]
+        );
+
+        return res.json({ success: true, message: 'Template updated' });
+    } catch (err) {
+        console.error('[Templates] Update error:', err.message);
+        if (req.file) fs.unlink(req.file.path, () => { });
+        return res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// ── POST /templates/:id/duplicate ──────────────────────────────
+router.post('/:id/duplicate', authMiddleware, async (req, res) => {
+    try {
+        const [[template]] = await db.query(
+            'SELECT * FROM message_templates WHERE id = ? AND user_id = ? LIMIT 1',
+            [req.params.id, req.user.id]
+        );
+        if (!template) return res.status(404).json({ success: false, message: 'Template not found' });
+
+        const [result] = await db.query(
+            'INSERT INTO message_templates (user_id, name, message, category, media_url, buttons) VALUES (?, ?, ?, ?, ?, ?)',
+            [req.user.id, `${template.name} copy`, template.message, template.category, template.media_url, template.buttons]
+        );
+        return res.status(201).json({ success: true, templateId: result.insertId });
+    } catch (err) {
+        console.error('[Templates] Duplicate error:', err.message);
+        return res.status(500).json({ success: false, message: 'Server error' });
     }
 });
 

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-    Search, Send, MoreVertical, Phone, Info, Smile, Paperclip,
-    Check, CheckCheck, Clock, User, ArrowLeft, Loader2, MessageSquare, Plus, Zap
+    Search, Send, CheckCheck, Clock, User, ArrowLeft, Loader2, MessageSquare, Zap, ShieldOff
 } from 'lucide-react';
 import api from '../utils/api';
 import { useApp } from '../AppContext';
@@ -12,15 +11,30 @@ const Chat = () => {
     const [conversations, setConversations] = useState([]);
     const [selectedChat, setSelectedChat] = useState(null);
     const [messages, setMessages] = useState([]);
+    const [contacts, setContacts] = useState([]);
+    const [templates, setTemplates] = useState([]);
     const [input, setInput] = useState('');
+    const [search, setSearch] = useState('');
     const [loadingConv, setLoadingConv] = useState(true);
     const [loadingMsg, setLoadingMsg] = useState(false);
     const scrollRef = useRef(null);
 
     const fetchConversations = async () => {
         try {
-            const { data } = await api.get('/chats');
-            setConversations(data.conversations || []);
+            const [chatRes, contactRes, templateRes] = await Promise.all([
+                api.get('/chats'),
+                api.get('/contacts?limit=1000'),
+                api.get('/templates')
+            ]);
+            const contactRows = contactRes.data.contacts || [];
+            setContacts(contactRows);
+            setTemplates(templateRes.data.templates || []);
+            const contactMap = new Map(contactRows.map(contact => [contact.phone, contact]));
+            const enriched = (chatRes.data.conversations || []).map(chat => ({
+                ...chat,
+                contact: contactMap.get(String(chat.contact_phone).split('@')[0])
+            }));
+            setConversations(enriched);
         } catch (err) {
             console.error('Failed to load chats');
         } finally {
@@ -58,10 +72,14 @@ const Chat = () => {
                 }
                 fetchConversations();
             });
+            socket.on('contact_opt_out', fetchConversations);
         }
 
         return () => {
-            if (socket) socket.off('message_received');
+            if (socket) {
+                socket.off('message_received');
+                socket.off('contact_opt_out', fetchConversations);
+            }
         };
     }, [socket, selectedChat]);
 
@@ -98,20 +116,46 @@ const Chat = () => {
         }
     };
 
-    return (
-        <div className="h-[calc(100vh-120px)] max-w-[1600px] mx-auto flex bg-white rounded-[2.5rem] overflow-hidden shadow-2xl border border-gray-100 animate-fade-in relative z-0">
-            {/* Background elements */}
-            <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-50 rounded-full blur-[100px] -z-10 opacity-60"></div>
-            <div className="absolute bottom-0 left-0 w-96 h-96 bg-blue-50 rounded-full blur-[100px] -z-10 opacity-60"></div>
+    const selectedContact = selectedChat?.contact || contacts.find(contact => contact.phone === String(selectedChat?.contact_phone || '').split('@')[0]);
 
+    const markDoNotMessage = async () => {
+        if (!selectedChat) return;
+        try {
+            if (selectedContact?.id) {
+                await api.post(`/contacts/${selectedContact.id}/opt-out`);
+            } else {
+                await api.post(`/contacts/phone/${encodeURIComponent(selectedChat.contact_phone.split('@')[0])}/opt-out`);
+            }
+            toast.success('Contact marked do not message');
+            fetchConversations();
+        } catch (err) {
+            toast.error(err.response?.data?.message || 'Could not update contact');
+        }
+    };
+
+    const insertTemplate = (templateId) => {
+        const template = templates.find(t => String(t.id) === String(templateId));
+        if (!template) return;
+        const name = selectedContact?.name || 'Customer';
+        setInput(String(template.message || '').replace(/\{\{name\}\}/gi, name));
+    };
+
+    const filteredConversations = conversations.filter(chat => {
+        const value = search.toLowerCase();
+        return chat.contact_phone.toLowerCase().includes(value) || String(chat.contact?.name || '').toLowerCase().includes(value);
+    });
+
+    return (
+        <div className="h-[calc(100vh-120px)] max-w-[1600px] mx-auto flex bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 animate-fade-in relative z-0">
             {/* Left Pane: Chat List */}
-            <div className={`w-full md:w-[380px] flex flex-col border-r border-gray-100 bg-white/60 backdrop-blur-xl shrink-0 ${selectedChat ? 'hidden md:flex' : 'flex'}`}>
+            <div className={`w-full md:w-[380px] flex flex-col border-r border-gray-100 bg-white shrink-0 ${selectedChat ? 'hidden md:flex' : 'flex'}`}>
                 {/* Header */}
-                <div className="px-6 py-5 flex items-center justify-between border-b border-gray-100/60 bg-white/40">
-                    <h3 className="text-2xl font-black text-gray-900 tracking-tight">Messages</h3>
-                    <div className="flex gap-2 text-gray-400">
-                        <button className="w-10 h-10 flex items-center justify-center hover:bg-emerald-50 hover:text-emerald-600 rounded-2xl transition-all shadow-sm"><MoreVertical size={20} /></button>
+                <div className="px-6 py-5 border-b border-gray-100 bg-white">
+                    <div className="flex items-center justify-between">
+                        <h3 className="text-2xl font-black text-gray-900 tracking-tight">Inbox</h3>
+                        <p className="text-xs font-black uppercase tracking-widest text-gray-400">{conversations.length} threads</p>
                     </div>
+                    <p className="text-sm font-medium text-gray-500 mt-1">Reply faster with saved templates and consent controls.</p>
                 </div>
 
                 {/* Search */}
@@ -122,7 +166,16 @@ const Chat = () => {
                             type="text"
                             className="w-full bg-gray-50/80 border border-transparent text-gray-900 focus:bg-white focus:border-emerald-300 focus:ring-4 focus:ring-emerald-500/10 pl-12 pr-4 py-3.5 rounded-2xl transition-all font-medium placeholder-gray-400 shadow-sm"
                             placeholder="Search inbox..."
+                            value={search}
+                            onChange={e => setSearch(e.target.value)}
                         />
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-3">
+                        {['All', 'Do not message', 'Saved contacts'].map(label => (
+                            <span key={label} className="px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-100 text-[11px] font-black text-gray-500">
+                                {label}
+                            </span>
+                        ))}
                     </div>
                 </div>
 
@@ -130,14 +183,14 @@ const Chat = () => {
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-1">
                     {loadingConv ? (
                         <div className="p-10 text-center"><Loader2 size={32} className="animate-spin inline-block text-emerald-500" /></div>
-                    ) : conversations.length === 0 ? (
+                    ) : filteredConversations.length === 0 ? (
                         <div className="p-10 text-center flex flex-col items-center">
                             <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center text-gray-300 mb-4">
                                 <MessageSquare size={24} />
                             </div>
                             <p className="text-sm text-gray-500 font-bold uppercase tracking-widest">Inbox Zero</p>
                         </div>
-                    ) : conversations.map(chat => (
+                    ) : filteredConversations.map(chat => (
                         <div
                             key={chat.contact_phone}
                             onClick={() => handleSelectChat(chat)}
@@ -160,7 +213,7 @@ const Chat = () => {
                             <div className="flex-1 min-w-0 flex flex-col justify-center">
                                 <div className="flex justify-between items-center mb-1">
                                     <h4 className={`font-black text-[15px] truncate ${selectedChat?.contact_phone === chat.contact_phone ? 'text-emerald-900' : 'text-gray-900'}`}>
-                                        {chat.contact_phone.includes('@g.us') ? 'Group Chat' : `+${chat.contact_phone.split('@')[0]}`}
+                                        {chat.contact?.name || (chat.contact_phone.includes('@g.us') ? 'Group Chat' : `+${chat.contact_phone.split('@')[0]}`)}
                                     </h4>
                                     <span className={`text-[11px] font-bold ${chat.message_count > 0 ? 'text-emerald-600' : 'text-gray-400'}`}>
                                         {new Date(chat.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -168,7 +221,7 @@ const Chat = () => {
                                 </div>
                                 <div className="flex items-center gap-1">
                                     <p className={`text-[13px] truncate ${chat.message_count > 0 ? 'text-gray-900 font-bold' : 'text-gray-500 font-medium'}`}>
-                                        {chat.contact_phone.includes('@g.us') ? 'Tap to view group activity' : 'Tap to open conversation'}
+                                        {chat.contact?.do_not_message ? 'Do not message' : (chat.contact_phone.includes('@g.us') ? 'Tap to view group activity' : `+${chat.contact_phone.split('@')[0]}`)}
                                     </p>
                                 </div>
                             </div>
@@ -178,7 +231,7 @@ const Chat = () => {
             </div>
 
             {/* Right Pane: Message Window */}
-            <div className={`flex-1 flex flex-col bg-gray-50/50 backdrop-blur-2xl relative ${!selectedChat ? 'hidden md:flex' : 'flex'}`}>
+            <div className={`flex-1 flex flex-col bg-gray-50 relative ${!selectedChat ? 'hidden md:flex' : 'flex'}`}>
                 {!selectedChat ? (
                     <div className="flex-1 flex flex-col items-center justify-center text-center p-10 animate-fade-in">
                         <div className="relative mb-8">
@@ -212,16 +265,21 @@ const Chat = () => {
                                 </div>
                                 <div>
                                     <h4 className="font-black text-lg text-gray-900 tracking-tight">
-                                        {selectedChat.contact_phone.includes('@g.us') ? 'Group Operations' : `+${selectedChat.contact_phone.split('@')[0]}`}
+                                        {selectedContact?.name || (selectedChat.contact_phone.includes('@g.us') ? 'Group Operations' : `+${selectedChat.contact_phone.split('@')[0]}`)}
                                     </h4>
                                     <p className="text-[11px] text-emerald-600 font-black uppercase tracking-widest flex items-center gap-1 mt-0.5">
-                                        System Online
+                                        {selectedContact?.do_not_message ? 'Do not message' : `+${selectedChat.contact_phone.split('@')[0]}`}
                                     </p>
                                 </div>
                             </div>
-                            <div className="flex gap-2 text-gray-400">
-                                <button className="w-10 h-10 flex items-center justify-center hover:bg-gray-50 rounded-xl transition-colors text-gray-500 hover:text-emerald-600"><Phone size={20} /></button>
-                                <button className="w-10 h-10 flex items-center justify-center hover:bg-gray-50 rounded-xl transition-colors text-gray-500 hover:text-emerald-600"><Info size={20} /></button>
+                            <div className="flex items-center gap-2">
+                                {selectedContact?.do_not_message ? (
+                                    <span className="px-3 py-2 rounded-lg bg-red-50 text-red-600 text-xs font-black">Do not message</span>
+                                ) : (
+                                    <button onClick={markDoNotMessage} className="px-3 py-2 rounded-lg border border-red-100 text-red-600 text-xs font-black flex items-center gap-2">
+                                        <ShieldOff size={14} /> Mark do not message
+                                    </button>
+                                )}
                             </div>
                         </div>
 
@@ -253,12 +311,12 @@ const Chat = () => {
                         </div>
 
                         {/* Input Bar */}
-                        <div className="px-6 py-5 bg-white/80 backdrop-blur-md border-t border-gray-100 z-10 shadow-sm relative flex items-center gap-3">
+                        <div className="px-6 py-5 bg-white border-t border-gray-100 z-10 shadow-sm relative flex items-center gap-3">
+                            <select onChange={e => insertTemplate(e.target.value)} value="" className="hidden md:block h-14 px-3 rounded-lg border border-gray-200 bg-gray-50 font-bold text-sm max-w-56">
+                                <option value="">Use template</option>
+                                {templates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
+                            </select>
                             <form onSubmit={handleSend} className="flex-1 flex items-center gap-3">
-                                <div className="flex gap-1 shrink-0 bg-gray-50 p-1.5 rounded-[1.25rem] border border-gray-100">
-                                    <button type="button" className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-emerald-500 hover:bg-emerald-50 rounded-xl transition-all"><Smile size={22} /></button>
-                                    <button type="button" className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-emerald-500 hover:bg-emerald-50 rounded-xl transition-all -rotate-45"><Paperclip size={20} /></button>
-                                </div>
                                 <div className="flex-1 relative">
                                     <input
                                         type="text"

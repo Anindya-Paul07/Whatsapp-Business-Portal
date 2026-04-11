@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard';
 import Connect from './pages/Connect';
 import Contacts from './pages/Contacts';
 import Campaigns from './pages/Campaigns';
+import CampaignDetail from './pages/CampaignDetail';
 import MessageBot from './pages/MessageBot';
 import Templates from './pages/Templates';
 import Chat from './pages/Chat';
@@ -34,6 +35,7 @@ const AppRoutes = () => {
         <Route path="connect" element={<Connect />} />
         <Route path="contacts" element={<Contacts />} />
         <Route path="campaigns" element={<Campaigns />} />
+        <Route path="campaigns/:id" element={<CampaignDetail />} />
         <Route path="message-bot" element={<MessageBot />} />
         <Route path="templates" element={<Templates />} />
         <Route path="chat" element={<Chat />} />

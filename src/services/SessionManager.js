@@ -1,6 +1,9 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const path = require('path');
+const fs = require('fs');
 const db = require('../config/db');
+
+const OPT_OUT_WORDS = new Set(['stop', 'unsubscribe', 'cancel', 'optout', 'opt out', 'remove', 'quit']);
 
 /**
  * SessionManager
@@ -110,9 +113,74 @@ class SessionManager {
     async destroySession(userId) {
         const client = this.clients.get(userId);
         if (client) {
+            try { await client.logout(); } catch (e) { }
             try { await client.destroy(); } catch (e) { }
             this.clients.delete(userId);
         }
+
+        this._removeSessionFiles(userId);
+
+        await db.query("UPDATE whatsapp_sessions SET status = 'disconnected' WHERE user_id = ?", [userId])
+            .catch(() => { });
+
+        this.io.to(`user_${userId}`).emit('session_status', {
+            status: 'disconnected',
+            sessionId: 'default',
+            message: 'WhatsApp Disconnected.'
+        });
+    }
+
+    _removeSessionFiles(userId) {
+        const sessionPath = path.resolve(process.env.SESSION_DATA_PATH || './sessions');
+        const localAuthPath = path.join(sessionPath, `session-session_${userId}`);
+        try {
+            fs.rmSync(localAuthPath, { recursive: true, force: true });
+        } catch (e) {
+            console.warn(`[SessionManager] Could not remove session files for user ${userId}:`, e.message);
+        }
+    }
+
+    async _markOptOut(userId, phone) {
+        const [result] = await db.query(
+            `UPDATE contacts
+                SET do_not_message = 1, consent_status = 'do_not_message', opt_out_at = COALESCE(opt_out_at, NOW())
+              WHERE user_id = ? AND phone = ?`,
+            [userId, phone]
+        );
+
+        if (result.affectedRows === 0) {
+            await db.query(
+                `INSERT INTO contacts (user_id, name, phone, source, do_not_message, consent_status, opt_out_at)
+                 VALUES (?, ?, ?, 'customer_inquiry', 1, 'do_not_message', NOW())`,
+                [userId, `Contact ${phone}`, phone]
+            );
+        }
+    }
+
+    async _handleAutoReply(client, userId, phone, text) {
+        const [bots] = await db.query(
+            `SELECT keyword, reply_text, reply_type
+               FROM message_bots
+              WHERE user_id = ? AND is_active = 1
+              ORDER BY COALESCE(priority, 100) ASC, created_at ASC`,
+            [userId]
+        );
+
+        const normalized = text.toLowerCase().trim();
+        const bot = bots.find(row => {
+            const keyword = String(row.keyword || '').toLowerCase().trim();
+            if (!keyword) return false;
+            return row.reply_type === 'exact' ? normalized === keyword : normalized.includes(keyword);
+        });
+
+        if (!bot) return;
+
+        await client.sendMessage(`${phone}@c.us`, bot.reply_text);
+        await db.query(
+            `INSERT INTO chat_logs (user_id, contact_phone, body, direction)
+             VALUES (?, ?, ?, 'out')`,
+            [userId, phone, bot.reply_text]
+        );
     }
 
     // Attach all WhatsApp lifecycle events and emit to the user's socket room
@@ -145,7 +213,40 @@ class SessionManager {
 
         client.on('auth_failure', (msg) => {
             console.error(`[SessionManager] Auth failure for user ${userId}:`, msg);
+            this._removeSessionFiles(userId);
             this.io.to(room).emit('session_status', { status: 'disconnected', sessionId, message: 'Authentication failed. Please re-scan.' });
+        });
+
+        client.on('message', async (message) => {
+            try {
+                if (!message || message.fromMe || !message.from || message.from.includes('@g.us')) return;
+                const phone = String(message.from).split('@')[0];
+                const body = String(message.body || '').trim();
+                if (!phone || !body) return;
+
+                await db.query(
+                    `INSERT INTO chat_logs (user_id, contact_phone, body, direction)
+                     VALUES (?, ?, ?, 'in')`,
+                    [userId, phone, body]
+                );
+                this.io.to(room).emit('message_received', {
+                    contactPhone: phone,
+                    body,
+                    direction: 'in',
+                    created_at: new Date().toISOString()
+                });
+
+                const normalized = body.toLowerCase().replace(/[.!?]/g, '').trim();
+                if (OPT_OUT_WORDS.has(normalized)) {
+                    await this._markOptOut(userId, phone);
+                    this.io.to(room).emit('contact_opt_out', { phone, message: 'Contact marked do not message.' });
+                    return;
+                }
+
+                await this._handleAutoReply(client, userId, phone, body);
+            } catch (err) {
+                console.error(`[SessionManager] Incoming message handling failed for user ${userId}:`, err.message);
+            }
         });
 
         client.on('disconnected', (reason) => {
@@ -160,6 +261,7 @@ class SessionManager {
             }
 
             this.clients.delete(userId);
+            this._removeSessionFiles(userId);
             this.io.to(room).emit('session_status', { status: 'disconnected', sessionId, message: 'WhatsApp Disconnected.' });
         });
     }
