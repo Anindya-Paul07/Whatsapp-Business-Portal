@@ -21,6 +21,180 @@ const storage = multer.diskStorage({
 const upload = multer({ storage });
 const csvUpload = multer({ dest: 'uploads/' });
 
+function toCsv(rows) {
+    if (!rows.length) return '';
+    const header = Object.keys(rows[0]);
+    const lines = rows.map(row => header.map(key => `"${String(row[key] ?? '').replace(/"/g, '""')}"`).join(','));
+    return [header.join(','), ...lines].join('\n');
+}
+
+function toExcelXml(rows, sheetName = 'Report') {
+    const header = rows.length ? Object.keys(rows[0]) : [];
+    const xmlEscape = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    const headerCells = header.map(column => `<Cell><Data ss:Type="String">${xmlEscape(column)}</Data></Cell>`).join('');
+    const rowCells = rows.map(row => `<Row>${header.map(key => `<Cell><Data ss:Type="String">${xmlEscape(row[key])}</Data></Cell>`).join('')}</Row>`).join('');
+    return `<?xml version="1.0"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Worksheet ss:Name="${xmlEscape(sheetName)}">
+<Table>
+<Row>${headerCells}</Row>
+${rowCells}
+</Table>
+</Worksheet>
+</Workbook>`;
+}
+
+function buildPdf(title, rows) {
+    const escapePdfText = (text) => String(text).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+    const fitText = (text, width, fontSize = 9) => {
+        const raw = String(text ?? '');
+        const maxChars = Math.max(Math.floor(width / (fontSize * 0.52)) - 1, 1);
+        if (raw.length <= maxChars) return raw;
+        if (maxChars <= 3) return raw.slice(0, maxChars);
+        return `${raw.slice(0, maxChars - 3)}...`;
+    };
+    const formatHeader = (key) => String(key || '')
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase());
+
+    const pageLeft = 30;
+    const pageRight = 582;
+    const tableWidth = pageRight - pageLeft;
+    const titleY = 805;
+    const tableTopY = 770;
+    const rowHeight = 22;
+    const bottomY = 70;
+
+    const keys = rows.length ? Object.keys(rows[0]) : ['status'];
+    const maxColumns = 6;
+    const displayKeys = keys.slice(0, maxColumns);
+    const omittedColumns = Math.max(keys.length - displayKeys.length, 0);
+
+    const maxDataRows = Math.max(Math.floor((tableTopY - bottomY - rowHeight) / rowHeight), 1);
+    const displayRows = rows.slice(0, maxDataRows);
+    const omittedRows = Math.max(rows.length - displayRows.length, 0);
+
+    const colCount = displayKeys.length || 1;
+    const baseWidth = Math.floor(tableWidth / colCount);
+    const colWidths = Array(colCount).fill(baseWidth);
+    colWidths[colCount - 1] += tableWidth - (baseWidth * colCount);
+
+    const colStarts = [];
+    let xCursor = pageLeft;
+    for (const width of colWidths) {
+        colStarts.push(xCursor);
+        xCursor += width;
+    }
+
+    const lastRowIndex = displayRows.length + 1;
+    const tableBottomY = tableTopY - (lastRowIndex * rowHeight);
+
+    const drawOps = [];
+    const textOps = [];
+
+    const drawLine = (x1, y1, x2, y2) => drawOps.push(`${x1} ${y1} m ${x2} ${y2} l S`);
+    drawOps.push('0.8 w');
+    drawLine(pageLeft, tableTopY, pageRight, tableTopY);
+    for (let i = 1; i <= lastRowIndex; i++) {
+        const y = tableTopY - (i * rowHeight);
+        drawLine(pageLeft, y, pageRight, y);
+    }
+    for (let i = 0; i <= colCount; i++) {
+        const x = i === colCount ? pageRight : colStarts[i];
+        drawLine(x, tableTopY, x, tableBottomY);
+    }
+
+    textOps.push(`1 0 0 1 ${pageLeft} ${titleY} Tm (${escapePdfText(fitText(title, 420, 13))}) Tj`);
+    textOps.push(`1 0 0 1 ${pageRight - 120} ${titleY} Tm (Rows: ${rows.length}) Tj`);
+
+    if (!rows.length) {
+        textOps.push(`1 0 0 1 ${pageLeft + 6} ${tableTopY - 16} Tm (No data available) Tj`);
+    } else {
+        displayKeys.forEach((key, idx) => {
+            const text = fitText(formatHeader(key), colWidths[idx] - 10, 9);
+            const tx = colStarts[idx] + 5;
+            const ty = tableTopY - 15;
+            textOps.push(`1 0 0 1 ${tx} ${ty} Tm (${escapePdfText(text)}) Tj`);
+        });
+
+        displayRows.forEach((row, rowIndex) => {
+            displayKeys.forEach((key, colIndex) => {
+                const value = row[key];
+                const text = fitText(value, colWidths[colIndex] - 10, 8.5);
+                const tx = colStarts[colIndex] + 5;
+                const ty = tableTopY - ((rowIndex + 2) * rowHeight) + 7;
+                textOps.push(`1 0 0 1 ${tx} ${ty} Tm (${escapePdfText(text)}) Tj`);
+            });
+        });
+    }
+
+    if (omittedRows > 0) {
+        textOps.push(`1 0 0 1 ${pageLeft} ${tableBottomY - 20} Tm (${escapePdfText(`${omittedRows} more row(s) omitted`)}) Tj`);
+    }
+    if (omittedColumns > 0) {
+        textOps.push(`1 0 0 1 ${pageLeft} ${tableBottomY - 36} Tm (${escapePdfText(`${omittedColumns} more column(s) omitted`)}) Tj`);
+    }
+
+    const content = `q
+${drawOps.join('\n')}
+Q
+BT
+/F1 13 Tf
+${textOps[0] || ''}
+/F1 9 Tf
+${textOps.slice(1).join('\n')}
+ET`;
+
+    const objects = [];
+    const pushObj = (obj) => {
+        objects.push(obj);
+    };
+    pushObj('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+    pushObj('2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+    pushObj('3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n');
+    pushObj('4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n');
+    pushObj(`5 0 obj\n<< /Length ${Buffer.byteLength(content, 'utf8')} >>\nstream\n${content}\nendstream\nendobj\n`);
+
+    let pdf = '%PDF-1.4\n';
+    const offsets = [0];
+    objects.forEach(obj => {
+        offsets.push(Buffer.byteLength(pdf, 'utf8'));
+        pdf += obj;
+    });
+    const xrefStart = Buffer.byteLength(pdf, 'utf8');
+    pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+    for (let i = 1; i < offsets.length; i++) {
+        pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+    }
+    pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+    return Buffer.from(pdf, 'utf8');
+}
+
+function sendReport(res, format, filenameBase, rows, title) {
+    if (format === 'excel') {
+        const xml = toExcelXml(rows, filenameBase);
+        res.setHeader('Content-Type', 'application/vnd.ms-excel');
+        res.setHeader('Content-Disposition', `attachment; filename="${filenameBase}.xls"`);
+        return res.send(xml);
+    }
+    if (format === 'pdf') {
+        const pdfBuffer = buildPdf(title, rows);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filenameBase}.pdf"`);
+        return res.send(pdfBuffer);
+    }
+    const csvContent = toCsv(rows);
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${filenameBase}.csv"`);
+    return res.send(csvContent);
+}
+
 function normalizePhone(value) {
     return String(value || '').replace(/\D/g, '');
 }
@@ -50,6 +224,91 @@ function parseCsvContacts(filePath) {
             .on('end', () => resolve(results))
             .on('error', reject);
     });
+}
+
+async function buildLegacyRecipientFallbackRows(campaign, userId) {
+    const snapshot = safeJson(campaign.audience_snapshot_json, {});
+    const rows = [];
+
+    if (Array.isArray(snapshot?.contacts) && snapshot.contacts.length > 0) {
+        snapshot.contacts.forEach(contact => {
+            const phone = normalizePhone(contact.phone);
+            if (!phone) return;
+            rows.push({
+                name: contact.name || '',
+                phone,
+                status: 'unknown',
+                failure_code: null,
+                error_message: 'Legacy campaign data without per-recipient status',
+                sent_at: null,
+                created_at: campaign.created_at || null
+            });
+        });
+    } else if (Array.isArray(snapshot?.contactIds) && snapshot.contactIds.length > 0) {
+        const [contacts] = await db.query(
+            `SELECT name, phone
+               FROM contacts
+              WHERE user_id = ? AND id IN (?)`,
+            [userId, snapshot.contactIds]
+        );
+        contacts.forEach(contact => {
+            rows.push({
+                name: contact.name || '',
+                phone: contact.phone,
+                status: 'unknown',
+                failure_code: null,
+                error_message: 'Legacy campaign data without per-recipient status',
+                sent_at: null,
+                created_at: campaign.created_at || null
+            });
+        });
+    }
+
+    if (rows.length > 0) {
+        return rows;
+    }
+
+    const sent = Math.max(parseInt(campaign.sent_count || 0, 10), 0);
+    const failed = Math.max(parseInt(campaign.fail_count || 0, 10), 0);
+    const skipped = Math.max(parseInt(campaign.skipped_count || 0, 10), 0);
+    const total = sent + failed + skipped;
+    if (total === 0) return [];
+
+    const summaryRows = [];
+    for (let i = 0; i < sent; i++) {
+        summaryRows.push({
+            name: `Delivered recipient ${i + 1}`,
+            phone: '',
+            status: 'sent',
+            failure_code: null,
+            error_message: 'Legacy campaign summary row',
+            sent_at: null,
+            created_at: campaign.created_at || null
+        });
+    }
+    for (let i = 0; i < failed; i++) {
+        summaryRows.push({
+            name: `Failed recipient ${i + 1}`,
+            phone: '',
+            status: 'failed',
+            failure_code: 'legacy_summary',
+            error_message: 'Legacy campaign summary row',
+            sent_at: null,
+            created_at: campaign.created_at || null
+        });
+    }
+    for (let i = 0; i < skipped; i++) {
+        summaryRows.push({
+            name: `Skipped recipient ${i + 1}`,
+            phone: '',
+            status: 'skipped',
+            failure_code: 'legacy_summary',
+            error_message: 'Legacy campaign summary row',
+            sent_at: null,
+            created_at: campaign.created_at || null
+        });
+    }
+    return summaryRows;
 }
 
 async function resolveAudience(userId, audience = {}) {
@@ -179,7 +438,7 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
                         c.deep_pause_min_minutes, c.deep_pause_max_minutes,
                         c.send_window_start, c.send_window_end, c.failure_pause_threshold,
                         c.status, c.sent_count, c.fail_count, c.skipped_count, c.created_at,
-                        COUNT(cr.id) AS recipient_count
+                        GREATEST(COUNT(cr.id), COALESCE(c.sent_count, 0) + COALESCE(c.fail_count, 0) + COALESCE(c.skipped_count, 0)) AS recipient_count
                    FROM campaigns c
               LEFT JOIN campaign_recipients cr ON cr.campaign_id = c.id
                   WHERE c.user_id = ?
@@ -203,11 +462,34 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
         }
     });
 
+    router.get('/reports/export', authMiddleware, async (req, res) => {
+        const format = ['csv', 'excel', 'pdf'].includes(String(req.query.format || '').toLowerCase())
+            ? String(req.query.format || '').toLowerCase()
+            : 'csv';
+        try {
+            const [rows] = await db.query(
+                `SELECT c.id AS campaign_id, c.name AS campaign_name, c.status, c.scheduled_at, c.started_at, c.finished_at,
+                        c.sent_count, c.fail_count, c.skipped_count, c.created_at,
+                        GREATEST(COUNT(cr.id), COALESCE(c.sent_count, 0) + COALESCE(c.fail_count, 0) + COALESCE(c.skipped_count, 0)) AS recipient_count
+                   FROM campaigns c
+              LEFT JOIN campaign_recipients cr ON cr.campaign_id = c.id
+                  WHERE c.user_id = ?
+               GROUP BY c.id
+               ORDER BY c.created_at DESC`,
+                [req.user.id]
+            );
+            return sendReport(res, format, `campaign-history-${req.user.id}`, rows, 'Campaign History Report');
+        } catch (err) {
+            console.error('[Campaigns] Export all report error:', err.message);
+            return res.status(500).json({ success: false, message: 'Server error' });
+        }
+    });
+
     router.get('/:id', authMiddleware, async (req, res) => {
         try {
             const [[campaign]] = await db.query(
                 `SELECT c.*, t.name AS template_name, t.message AS template_message, t.media_url AS template_media_url, t.buttons,
-                        COUNT(cr.id) AS recipient_count
+                        GREATEST(COUNT(cr.id), COALESCE(c.sent_count, 0) + COALESCE(c.fail_count, 0) + COALESCE(c.skipped_count, 0)) AS recipient_count
                    FROM campaigns c
               LEFT JOIN message_templates t ON c.template_id = t.id
               LEFT JOIN campaign_recipients cr ON cr.campaign_id = c.id
@@ -494,7 +776,10 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
     router.get('/:id/recipients', authMiddleware, async (req, res) => {
         try {
             const [[campaign]] = await db.query(
-                `SELECT id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1`,
+                `SELECT id, audience_snapshot_json, sent_count, fail_count, skipped_count, created_at
+                   FROM campaigns
+                  WHERE id = ? AND user_id = ?
+                  LIMIT 1`,
                 [req.params.id, req.user.id]
             );
             if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
@@ -506,9 +791,44 @@ module.exports = function createCampaignRoutes(sessionManager, io) {
                   ORDER BY id ASC`,
                 [req.params.id]
             );
-            return res.json({ success: true, recipients: rows });
+            if (rows.length > 0) {
+                return res.json({ success: true, recipients: rows });
+            }
+
+            const fallbackRows = await buildLegacyRecipientFallbackRows(campaign, req.user.id);
+            return res.json({ success: true, recipients: fallbackRows });
         } catch (err) {
             console.error('[Campaigns] Recipients error:', err.message);
+            return res.status(500).json({ success: false, message: 'Server error' });
+        }
+    });
+
+    router.get('/:id/report', authMiddleware, async (req, res) => {
+        const campaignId = parseInt(req.params.id, 10);
+        const format = ['csv', 'excel', 'pdf'].includes(String(req.query.format || '').toLowerCase())
+            ? String(req.query.format || '').toLowerCase()
+            : 'csv';
+        try {
+            const [[campaign]] = await db.query(
+                `SELECT id, name, audience_snapshot_json, sent_count, fail_count, skipped_count, created_at
+                   FROM campaigns
+                  WHERE id = ? AND user_id = ?
+                  LIMIT 1`,
+                [campaignId, req.user.id]
+            );
+            if (!campaign) return res.status(404).json({ success: false, message: 'Campaign not found' });
+
+            const [rows] = await db.query(
+                `SELECT name, phone, status, failure_code, error_message, sent_at, created_at
+                   FROM campaign_recipients
+                  WHERE campaign_id = ?
+                  ORDER BY id ASC`,
+                [campaignId]
+            );
+            const reportRows = rows.length > 0 ? rows : await buildLegacyRecipientFallbackRows(campaign, req.user.id);
+            return sendReport(res, format, `campaign-${campaignId}-report`, reportRows, `${campaign.name} Recipient Report`);
+        } catch (err) {
+            console.error('[Campaigns] Campaign report error:', err.message);
             return res.status(500).json({ success: false, message: 'Server error' });
         }
     });

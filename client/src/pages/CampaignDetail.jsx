@@ -49,16 +49,84 @@ const CampaignDetail = () => {
         acc[row.status] = (acc[row.status] || 0) + 1;
         return acc;
     }, { pending: 0, sent: 0, failed: 0, skipped: 0 }), [recipients]);
+    const campaignSent = Number(campaign?.sent_count ?? campaign?.sentCount ?? 0) || 0;
+    const campaignFailed = Number(campaign?.fail_count ?? campaign?.failCount ?? 0) || 0;
+    const campaignSkipped = Number(campaign?.skipped_count ?? campaign?.skippedCount ?? 0) || 0;
+    const effectiveCounts = {
+        pending: counts.pending || 0,
+        sent: Math.max(counts.sent || 0, campaignSent),
+        failed: Math.max(counts.failed || 0, campaignFailed),
+        skipped: Math.max(counts.skipped || 0, campaignSkipped)
+    };
+    const fallbackRecipients = useMemo(() => {
+        const rows = [];
+        const createdAt = campaign?.created_at || null;
+
+        for (let i = 0; i < effectiveCounts.sent; i++) {
+            rows.push({
+                id: `legacy-sent-${i + 1}`,
+                contact_id: null,
+                name: `Delivered recipient ${i + 1}`,
+                phone: '',
+                status: 'sent',
+                failure_code: null,
+                error_message: 'Legacy campaign summary row',
+                sent_at: null,
+                created_at: createdAt
+            });
+        }
+        for (let i = 0; i < effectiveCounts.failed; i++) {
+            rows.push({
+                id: `legacy-failed-${i + 1}`,
+                contact_id: null,
+                name: `Failed recipient ${i + 1}`,
+                phone: '',
+                status: 'failed',
+                failure_code: 'legacy_summary',
+                error_message: 'Legacy campaign summary row',
+                sent_at: null,
+                created_at: createdAt
+            });
+        }
+        for (let i = 0; i < effectiveCounts.skipped; i++) {
+            rows.push({
+                id: `legacy-skipped-${i + 1}`,
+                contact_id: null,
+                name: `Skipped recipient ${i + 1}`,
+                phone: '',
+                status: 'skipped',
+                failure_code: 'legacy_summary',
+                error_message: 'Legacy campaign summary row',
+                sent_at: null,
+                created_at: createdAt
+            });
+        }
+        for (let i = 0; i < effectiveCounts.pending; i++) {
+            rows.push({
+                id: `legacy-pending-${i + 1}`,
+                contact_id: null,
+                name: `Pending recipient ${i + 1}`,
+                phone: '',
+                status: 'pending',
+                failure_code: null,
+                error_message: null,
+                sent_at: null,
+                created_at: createdAt
+            });
+        }
+        return rows;
+    }, [campaign?.created_at, effectiveCounts.failed, effectiveCounts.pending, effectiveCounts.sent, effectiveCounts.skipped]);
+    const displayRecipients = recipients.length > 0 ? recipients : fallbackRecipients;
 
     const message = campaign?.template_message || campaign?.message || '';
     const mediaUrl = campaign?.template_media_url || campaign?.media_url || '';
     const mediaSource = campaign?.template_media_url ? 'Template media' : (campaign?.media_url ? 'Campaign upload' : '');
     const buttons = safeJson(campaign?.buttons, []);
-    const failureRows = recipients.filter(row => row.status === 'failed');
+    const failureRows = displayRecipients.filter(row => row.status === 'failed');
 
     const exportRecipients = () => {
         const header = ['name', 'phone', 'status', 'failure_code', 'error_message', 'sent_at'];
-        const lines = recipients.map(row => header.map(key => `"${String(row[key] || '').replace(/"/g, '""')}"`).join(','));
+        const lines = displayRecipients.map(row => header.map(key => `"${String(row[key] || '').replace(/"/g, '""')}"`).join(','));
         const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
@@ -114,17 +182,19 @@ const CampaignDetail = () => {
 
     const progressCampaign = {
         ...campaign,
-        sentCount: campaign.sentCount ?? campaign.sent_count ?? counts.sent,
-        failCount: campaign.failCount ?? campaign.fail_count ?? counts.failed,
-        skippedCount: campaign.skippedCount ?? campaign.skipped_count ?? counts.skipped,
-        total: campaign.total || recipients.length,
-        progress: campaign.progress ?? (recipients.length ? Math.round(((counts.sent + counts.failed + counts.skipped) / recipients.length) * 100) : 0)
+        sentCount: campaign.sentCount ?? campaign.sent_count ?? effectiveCounts.sent,
+        failCount: campaign.failCount ?? campaign.fail_count ?? effectiveCounts.failed,
+        skippedCount: campaign.skippedCount ?? campaign.skipped_count ?? effectiveCounts.skipped,
+        total: campaign.total || Math.max(displayRecipients.length, effectiveCounts.sent + effectiveCounts.failed + effectiveCounts.skipped + effectiveCounts.pending),
+        progress: campaign.progress ?? (Math.max(displayRecipients.length, effectiveCounts.sent + effectiveCounts.failed + effectiveCounts.skipped + effectiveCounts.pending)
+            ? Math.round(((effectiveCounts.sent + effectiveCounts.failed + effectiveCounts.skipped) / Math.max(displayRecipients.length, effectiveCounts.sent + effectiveCounts.failed + effectiveCounts.skipped + effectiveCounts.pending)) * 100)
+            : 0)
     };
-    const completedCount = counts.sent + counts.failed + counts.skipped;
-    const successRate = completedCount ? Math.round((counts.sent / completedCount) * 100) : 0;
+    const completedCount = effectiveCounts.sent + effectiveCounts.failed + effectiveCounts.skipped;
+    const successRate = completedCount ? Math.round((effectiveCounts.sent / completedCount) * 100) : 0;
     const tabs = [
         ['overview', 'Overview'],
-        ['recipients', `Recipients (${recipients.length})`],
+        ['recipients', `Recipients (${displayRecipients.length})`],
         ['failures', `Failures (${failureRows.length})`],
         ['message', 'Message'],
         ['settings', 'Settings']
@@ -150,7 +220,7 @@ const CampaignDetail = () => {
                     {['paused', 'pending', 'failed'].includes(campaign.status) && counts.pending > 0 && (
                         <button onClick={resumeCampaign} className="px-4 py-3 rounded-lg bg-emerald-600 text-white font-black flex items-center gap-2"><PlayCircle size={18} /> Resume pending</button>
                     )}
-                    {counts.failed > 0 && (
+                    {effectiveCounts.failed > 0 && (
                         <button onClick={retryFailed} className="px-4 py-3 rounded-lg border border-gray-200 font-black flex items-center gap-2"><RefreshCw size={18} /> Retry failed</button>
                     )}
                     <button onClick={exportRecipients} className="px-4 py-3 rounded-lg border border-gray-200 font-black flex items-center gap-2"><Download size={18} /> Export CSV</button>
@@ -163,11 +233,11 @@ const CampaignDetail = () => {
 
             <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
                 {[
-                    ['Total', recipients.length, 'bg-gray-50 text-gray-700'],
-                    ['Sent', counts.sent || 0, 'bg-emerald-50 text-emerald-700'],
-                    ['Failed', counts.failed || 0, 'bg-red-50 text-red-700'],
-                    ['Skipped', counts.skipped || 0, 'bg-amber-50 text-amber-700'],
-                    ['Pending', counts.pending || 0, 'bg-blue-50 text-blue-700'],
+                    ['Total', Math.max(displayRecipients.length, effectiveCounts.sent + effectiveCounts.failed + effectiveCounts.skipped + effectiveCounts.pending), 'bg-gray-50 text-gray-700'],
+                    ['Sent', effectiveCounts.sent || 0, 'bg-emerald-50 text-emerald-700'],
+                    ['Failed', effectiveCounts.failed || 0, 'bg-red-50 text-red-700'],
+                    ['Skipped', effectiveCounts.skipped || 0, 'bg-amber-50 text-amber-700'],
+                    ['Pending', effectiveCounts.pending || 0, 'bg-blue-50 text-blue-700'],
                     ['Success', `${successRate}%`, 'bg-emerald-50 text-emerald-700']
                 ].map(([label, value, cls]) => (
                     <div key={label} className={`rounded-lg border border-gray-100 p-5 ${cls}`}>
@@ -210,10 +280,10 @@ const CampaignDetail = () => {
                                 <p className="font-black text-gray-900 mt-1">{campaign.finished_at ? new Date(campaign.finished_at).toLocaleString() : '-'}</p>
                             </div>
                         </div>
-                        {failureRows.length > 0 && (
+                        {effectiveCounts.failed > 0 && (
                             <div className="mt-5 p-4 rounded-xl bg-red-50 border border-red-100 flex gap-3">
                                 <AlertTriangle className="text-red-600 shrink-0" />
-                                <p className="text-sm font-bold text-red-700">{failureRows.length} recipients failed. Open Failures to review reasons, then retry failed only.</p>
+                                <p className="text-sm font-bold text-red-700">{effectiveCounts.failed} recipients failed. Open Failures to review reasons, then retry failed only.</p>
                             </div>
                         )}
                     </div>
@@ -225,7 +295,7 @@ const CampaignDetail = () => {
                         </div>
                         <div className="space-y-3 text-sm font-medium text-gray-600">
                             <p><span className="font-black text-gray-900">Mode:</span> {campaign.audience_type || 'saved audience'}</p>
-                            <p><span className="font-black text-gray-900">Recipients:</span> {recipients.length}</p>
+                            <p><span className="font-black text-gray-900">Recipients:</span> {Math.max(displayRecipients.length, effectiveCounts.sent + effectiveCounts.failed + effectiveCounts.skipped + effectiveCounts.pending)}</p>
                             {campaign.scheduled_at && <p><span className="font-black text-gray-900">Scheduled:</span> {new Date(campaign.scheduled_at).toLocaleString()}</p>}
                             <p><span className="font-black text-gray-900">Batch limit:</span> {campaign.batch_limit || 50}</p>
                         </div>
@@ -271,7 +341,7 @@ const CampaignDetail = () => {
             )}
 
             {activeTab === 'recipients' && (
-                <RecipientTable recipients={recipients} title="Recipient results" detail="Every recipient keeps its own status and failure reason." />
+                <RecipientTable recipients={displayRecipients} title="Recipient results" detail="Every recipient keeps its own status and failure reason." />
             )}
 
             {activeTab === 'failures' && (

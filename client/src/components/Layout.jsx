@@ -18,6 +18,7 @@ const Sidebar = () => {
             items: [
                 { name: 'Home', icon: <LayoutDashboard size={19} />, path: '/' },
                 { name: 'Send Campaign', icon: <Send size={19} />, path: '/campaigns' },
+                { name: 'Campaign History', icon: <Clock size={19} />, path: '/campaign-history' },
                 { name: 'Inbox', icon: <MessageSquare size={19} />, path: '/chat' },
             ]
         },
