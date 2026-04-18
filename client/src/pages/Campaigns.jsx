@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
     AlertTriangle, Calendar, CheckCircle2, ChevronLeft, Loader2,
-    Search, Send, ShieldAlert, Upload, X
+    Search, Send, ShieldAlert, Upload, X, ChevronRight
 } from 'lucide-react';
 import api from '../utils/api';
 import { useApp } from '../AppContext';
@@ -86,10 +86,6 @@ const Campaigns = () => {
 
     const [audiencePicker, setAudiencePicker] = useState('');
     const [contactSearch, setContactSearch] = useState('');
-    const lastAdvancedConfigRef = useRef('');
-    const lastAdvancedMessageRef = useRef('');
-    const currentConfigToken = `${name}|${sendMode}|${scheduledAt}`;
-    const currentMessageToken = `${selectedTemplateId}|${oneTimeMessage}`;
 
     const fetchData = async () => {
         setLoading(true);
@@ -230,27 +226,6 @@ const Campaigns = () => {
         return { type: audienceMode, contacts: csvContacts };
     };
 
-    useEffect(() => {
-        if (step !== 0) return;
-        const configToken = `${name}|${sendMode}|${scheduledAt}`;
-        const valid = name.trim() && (sendMode === 'now' || (sendMode === 'schedule' && scheduledAt));
-        if (valid && configToken !== lastAdvancedConfigRef.current) {
-            const timer = setTimeout(() => setStep(1), 180);
-            lastAdvancedConfigRef.current = configToken;
-            return () => clearTimeout(timer);
-        }
-    }, [name, scheduledAt, sendMode, step]);
-
-    useEffect(() => {
-        if (step !== 2) return;
-        const messageToken = `${selectedTemplateId}|${oneTimeMessage}`;
-        if (messageText.trim() && messageToken !== lastAdvancedMessageRef.current) {
-            const timer = setTimeout(() => setStep(3), 180);
-            lastAdvancedMessageRef.current = messageToken;
-            return () => clearTimeout(timer);
-        }
-    }, [messageText, oneTimeMessage, selectedTemplateId, step]);
-
     const handleCsvPreview = async () => {
         if (!csvFile) return toast.error('Choose a CSV file first');
         setPreviewingCsv(true);
@@ -285,8 +260,6 @@ const Campaigns = () => {
         setCampaignMedia(null);
         setTemplateSearch('');
         setPreviewContactId('');
-        lastAdvancedConfigRef.current = '';
-        lastAdvancedMessageRef.current = '';
         localStorage.removeItem(DRAFT_KEY);
     };
 
@@ -339,7 +312,6 @@ const Campaigns = () => {
         if (!mode) return;
         if (mode === 'all_contacts') {
             setAudienceMode('all_contacts');
-            setStep(2);
             return;
         }
         setAudiencePicker(mode);
@@ -351,18 +323,69 @@ const Campaigns = () => {
         if (audiencePicker === 'csv_upload' && (csvPreview?.validRows?.length || 0) === 0) return toast.error('Preview and confirm a CSV first');
         setAudienceMode(audiencePicker);
         setAudiencePicker('');
-        setStep(2);
+    };
+
+    const clearStepData = (stepIndex) => {
+        if (stepIndex === 0) {
+            setName('');
+            setSendMode('');
+            setScheduledAt('');
+        }
+        if (stepIndex === 1) {
+            setAudienceMode('');
+            setSelectedIds([]);
+            setSelectedLabels([]);
+            setExcludedIds([]);
+            setCsvPreview(null);
+            setCsvFile(null);
+            setAudiencePicker('');
+        }
+        if (stepIndex === 2) {
+            setSelectedTemplateId('');
+            setOneTimeMessage('');
+            setCampaignMedia(null);
+            setTemplateSearch('');
+            setPreviewContactId('');
+        }
+    };
+
+    const clearFromStep = (fromStep) => {
+        for (let idx = fromStep; idx <= 2; idx += 1) {
+            clearStepData(idx);
+        }
     };
 
     const navigateToStep = (targetStep) => {
-        if (targetStep > step) return;
-        if (targetStep === 0) {
-            lastAdvancedConfigRef.current = currentConfigToken;
-        }
-        if (targetStep === 2) {
-            lastAdvancedMessageRef.current = currentMessageToken;
-        }
+        if (targetStep >= step) return;
+        clearFromStep(targetStep);
         setStep(targetStep);
+    };
+
+    const handleBack = () => {
+        if (step === 0) return;
+        const targetStep = Math.max(step - 1, 0);
+        clearFromStep(targetStep);
+        setStep(targetStep);
+    };
+
+    const handleNext = () => {
+        if (step === 0) {
+            if (!name.trim()) return toast.error('Add a campaign name');
+            if (sendMode !== 'now' && sendMode !== 'schedule') return toast.error('Choose send now or schedule');
+            if (sendMode === 'schedule' && !scheduledAt) return toast.error('Pick a schedule time');
+            setStep(1);
+            return;
+        }
+        if (step === 1) {
+            if (!audienceMode) return toast.error('Choose an audience method');
+            if (resolvedRecipients.length === 0) return toast.error('No recipients found for this audience');
+            setStep(2);
+            return;
+        }
+        if (step === 2) {
+            if (!messageText.trim()) return toast.error('Choose a template or write a message');
+            setStep(3);
+        }
     };
 
     if (loading) {
@@ -445,7 +468,7 @@ const Campaigns = () => {
                                     </div>
                                 )}
                                 <div className="p-4 rounded-lg bg-blue-50 border border-blue-100 text-sm font-bold text-blue-800">
-                                    This step moves automatically once campaign name and send mode are complete.
+                                    Add campaign basics, then click Next.
                                 </div>
                             </>
                         )}
@@ -468,7 +491,7 @@ const Campaigns = () => {
                                 </div>
                                 {!audienceMode && (
                                     <div className="p-4 rounded-lg bg-blue-50 border border-blue-100 text-sm font-bold text-blue-800">
-                                        Select an audience method. If a modal opens, confirm there and this step will move automatically.
+                                        Select an audience method and confirm it before moving next.
                                     </div>
                                 )}
                                 {audienceMode && (
@@ -585,11 +608,7 @@ const Campaigns = () => {
                     <div className="p-6 border-t border-gray-100 flex justify-between">
                         <button
                             disabled={step === 0}
-                            onClick={() => {
-                                if (step === 1) lastAdvancedConfigRef.current = currentConfigToken;
-                                if (step === 3) lastAdvancedMessageRef.current = currentMessageToken;
-                                setStep(prev => Math.max(prev - 1, 0));
-                            }}
+                            onClick={handleBack}
                             className="px-5 py-3 rounded-lg border border-gray-200 font-black disabled:opacity-40 flex items-center gap-2"
                         >
                             <ChevronLeft size={18} /> Back
@@ -600,7 +619,9 @@ const Campaigns = () => {
                                 {sendMode === 'schedule' ? 'Schedule campaign' : `Send to ${sendableCount} contacts`}
                             </button>
                         ) : (
-                            <p className="text-sm font-bold text-gray-500 self-center">Steps 1 to 3 move automatically after required fields are complete.</p>
+                            <button onClick={handleNext} className="px-6 py-3 rounded-lg bg-emerald-600 text-white font-black flex items-center gap-2">
+                                Next <ChevronRight size={18} />
+                            </button>
                         )}
                     </div>
                 </div>
